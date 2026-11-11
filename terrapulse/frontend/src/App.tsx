@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
 import { CircleMarker, MapContainer, Marker, Popup, TileLayer, useMapEvents } from 'react-leaflet'
 import {
@@ -10,7 +10,7 @@ import { Area, AreaChart, CartesianGrid, Legend, Line, LineChart, ResponsiveCont
 import 'leaflet/dist/leaflet.css'
 import './index.css'
 
-const API_BASE = 'http://localhost:8001/api/v1'
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000/api/v1'
 const LAST_RESULT_KEY = 'terrapulse:lastResult'
 const VIEWED_KEY = 'terrapulse:viewedIds'
 const PREFS_KEY = 'terrapulse:prefs'
@@ -336,7 +336,7 @@ function ExploreMap() {
     e.preventDefault()
     if (!q.trim()) return
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&limit=1`)
+      const r = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(q)}&limit=1`)
       const j = await r.json()
       if (j && j[0]) {
         const la = parseFloat(j[0].lat), lo = parseFloat(j[0].lon)
@@ -495,7 +495,7 @@ function ChangeAnalysis() {
   const geocodePlace = async () => {
     if (!form.place.trim()) return
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(form.place)}&limit=1`)
+      const r = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(form.place)}&limit=1`)
       const j = await r.json()
       if (j?.[0]) setForm((f) => ({ ...f, lat: String(+parseFloat(j[0].lat).toFixed(3)), lon: String(+parseFloat(j[0].lon).toFixed(3)) }))
       else setError(`No place found for “${form.place}”. Try coordinates instead.`)
@@ -934,8 +934,8 @@ function Alerts() {
             </tr></thead>
             <tbody>
               {list.map(({ job: j, sev, status }) => (
-                <>
-                  <tr key={j.job_id} className="border-b border-white/5">
+                <Fragment key={j.job_id}>
+                  <tr className="border-b border-white/5">
                     <td className="p-3 text-white">{hazardLabel(j.hazard)} indicator</td>
                     <td className="p-3">{regionName(j.location.lat, j.location.lon)}</td>
                     <td className="p-3">{sev === 'Monitoring' ? <span className="text-xs text-cyan-300">Monitoring</span> : <SevBadge level={sev} />}</td>
@@ -948,7 +948,7 @@ function Alerts() {
                       {detail ? <AnalysisResult result={detail} /> : <p className="text-white/50 text-sm">Loading result…</p>}
                     </td></tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -1062,7 +1062,7 @@ function Layout() {
     e.preventDefault()
     if (!q.trim()) return
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&limit=1`)
+      const r = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(q)}&limit=1`)
       const j = await r.json()
       if (j?.[0]) navigate(`/explore?lat=${j[0].lat}&lon=${j[0].lon}&label=${encodeURIComponent(j[0].display_name.split(',').slice(0, 2).join(','))}`)
     } catch { /* ignore */ }
