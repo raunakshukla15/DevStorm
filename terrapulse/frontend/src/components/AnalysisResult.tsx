@@ -5,6 +5,7 @@ import { usePrefsStore } from '../store/usePrefsStore'
 import type { AnalysisResult as AnalysisResultData, GeoJsonCollection } from '../types/api'
 import { downloadFile, fmt, formatArea, formatPower } from '../utils/format'
 import { Card } from './Card'
+import { ChangeCharts } from './ChangeCharts'
 import { GranuleCard } from './GranuleCard'
 import { ResultMapOverlay } from './ResultMapOverlay'
 import { SevBadge } from './SevBadge'
@@ -159,6 +160,8 @@ export function AnalysisResult({
             ))}
           </div>
         )}
+
+        {result.status === 'analyzed' && <ChangeCharts result={result} />}
 
         {result.status === 'analyzed' && (result.windows?.bounds || feats.length > 0) && (
           <div className="pt-2">

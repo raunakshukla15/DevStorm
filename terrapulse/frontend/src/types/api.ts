@@ -147,6 +147,12 @@ export interface AnalysisResult {
     status: string
     notes: string[]
   }
+  comparison?: ComparisonStats | null
+  backscatter_histogram?: BackscatterBin[]
+  delta_histogram?: DeltaBin[]
+  condition_breakdown?: ConditionClass[]
+  transect?: TransectPoint[]
+  timing?: AnalysisTiming | null
   analysis?: AnalysisMetrics
   results?: Record<string, GeoJsonCollection>
   processing_note?: string
@@ -205,14 +211,80 @@ export interface JobStartResponse {
   message: string
 }
 
+export interface ComparisonStats {
+  before_mean_db: number
+  before_median_db: number
+  before_std_db: number
+  before_p10_db: number
+  before_p90_db: number
+  after_mean_db: number
+  after_median_db: number
+  after_std_db: number
+  after_p10_db: number
+  after_p90_db: number
+  delta_mean_db: number
+  delta_median_db: number
+  threshold_db: number
+}
+
+export interface BackscatterBin {
+  bin: string
+  mid_db: number
+  before_pct: number
+  after_pct: number
+}
+
+export interface DeltaBin {
+  bin: string
+  mid_db: number
+  pct: number
+  direction: 'drop' | 'stable' | 'gain' | string
+}
+
+export interface ConditionClass {
+  key: string
+  label: string
+  pixels: number
+  pct: number
+  color: string
+}
+
+export interface TransectPoint {
+  step: number
+  offset_km: number
+  before_db: number
+  after_db: number
+  delta_db: number
+}
+
+export interface AnalysisTiming {
+  cmr_search_s: number
+  stream_s: number
+  compute_s: number
+  total_s: number
+}
+
+export interface PassSummary {
+  id?: string | null
+  title?: string | null
+  date: string
+  acquisition_date?: string | null
+  orbit_direction?: string | null
+  covers_point?: boolean
+}
+
 export interface PointInsights {
   available: boolean
   location: LocationPoint
   short_name?: string | null
   granules_last_90d?: number | null
+  granules_last_180d?: number | null
+  earliest_acquisition?: string | null
   latest_acquisition?: string | null
   latest_granule?: Granule | null
   recent_acquisitions?: string[]
+  available_passes?: PassSummary[]
+  query_elapsed_ms?: number | null
   supported_hazards?: string[]
   short_names_searched?: string[]
   note?: string

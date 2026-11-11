@@ -61,6 +61,8 @@ export default function ExploreMap() {
   const paramLabel = params.get('label')
 
   const [clickedPt, setClickedPt] = useState<{ lat: number; lon: number; label?: string } | null>(null)
+  const [customBefore, setCustomBefore] = useState<string | null>(null)
+  const [customAfter, setCustomAfter] = useState<string | null>(null)
   const activePt =
     clickedPt ??
     (paramLat !== null && paramLon !== null
@@ -105,6 +107,8 @@ export default function ExploreMap() {
     const rlat = Math.round(lat * 1000) / 1000
     const rlon = Math.round(lon * 1000) / 1000
     setClickedPt({ lat: rlat, lon: rlon, label })
+    setCustomBefore(null)
+    setCustomAfter(null)
     if (paramLat !== null || paramLon !== null) {
       setSearchParams({})
     }
@@ -352,42 +356,125 @@ export default function ExploreMap() {
               {insightsQuery.data && !insightsQuery.data.available && (
                 <p className="text-amber-200">{insightsQuery.data.note}</p>
               )}
-              {insightsQuery.data && insightsQuery.data.available && (
-                <>
-                  <p>
-                    <span className="text-white/50">Coverage (90d):</span>{' '}
-                    {insightsQuery.data.granules_last_90d} granules
-                  </p>
-                  <p>
-                    <span className="text-white/50">Latest pass:</span>{' '}
-                    {insightsQuery.data.latest_acquisition}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/timeseries?lat=${activePt.lat}&lon=${activePt.lon}`)}
-                    className="inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 text-cyan-200"
-                  >
-                    <LineChart size={13} /> Open Backscatter Time Series
-                  </button>
-                  <p className="font-semibold text-white pt-1">Detect hazard here:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {HAZARDS.map((h) => (
-                      <button
-                        type="button"
-                        key={h.id}
-                        onClick={() =>
-                          navigate(`/change?lat=${activePt.lat}&lon=${activePt.lon}&hazard=${h.id}&auto=1`)
-                        }
-                        className={`text-xs rounded-full px-3 py-1.5 font-medium text-white ${
-                          h.id === layerHz ? 'bg-cyan-600' : 'bg-white/10 hover:bg-white/20'
-                        }`}
-                      >
-                        {h.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
+              {insightsQuery.data && insightsQuery.data.available && (() => {
+                const passes = insightsQuery.data.available_passes ?? []
+                const defaultAfter = passes[0]?.date ?? insightsQuery.data.latest_acquisition ?? ''
+                const afterOrbit = passes[0]?.orbit_direction
+                const sameOrbitOlder = afterOrbit
+                  ? passes.filter((p) => p.date !== defaultAfter && p.orbit_direction === afterOrbit)
+                  : []
+                const olderPool =
+                  sameOrbitOlder.length > 0
+                    ? sameOrbitOlder
+                    : passes.filter((p) => p.date !== defaultAfter)
+                const defaultBefore =
+                  olderPool[olderPool.length - 1]?.date ??
+                  insightsQuery.data.earliest_acquisition ??
+                  defaultAfter
+                const selectedBefore = customBefore ?? defaultBefore
+                const selectedAfter = customAfter ?? defaultAfter
+                const hasPair = Boolean(selectedBefore && selectedAfter && selectedBefore !== selectedAfter)
+                const dateSuffix = hasPair
+                  ? `&before=${encodeURIComponent(selectedBefore)}&after=${encodeURIComponent(selectedAfter)}`
+                  : '&auto=1'
+
+                return (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <p>
+                        <span className="text-white/50">Live passes (180d):</span>{' '}
+                        <strong className="text-white">
+                          {passes.length || insightsQuery.data.granules_last_180d || insightsQuery.data.granules_last_90d}
+                        </strong>
+                      </p>
+                      {insightsQuery.data.query_elapsed_ms != null && (
+                        <span className="rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[11px] text-emerald-200">
+                          CMR {insightsQuery.data.query_elapsed_ms} ms
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs">
+                      <span className="text-white/50">Span:</span>{' '}
+                      {insightsQuery.data.earliest_acquisition ?? selectedBefore} →{' '}
+                      {insightsQuery.data.latest_acquisition ?? selectedAfter}
+                    </p>
+
+                    {passes.length >= 2 && (
+                      <div className="space-y-2 rounded-lg bg-white/5 border border-white/10 p-2.5">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-200">
+                          Before vs After Comparison
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="text-[11px] text-white/60">
+                            Before Date
+                            <select
+                              value={selectedBefore}
+                              onChange={(e) => setCustomBefore(e.target.value)}
+                              className="mt-1 w-full rounded bg-[#060b16] border border-white/15 px-2 py-1 text-xs text-white"
+                            >
+                              {passes.map((p) => (
+                                <option key={`b-${p.date}-${p.orbit_direction}`} value={p.date}>
+                                  {p.date} ({(p.orbit_direction ?? '?').slice(0, 3).toUpperCase()})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-[11px] text-white/60">
+                            After Date
+                            <select
+                              value={selectedAfter}
+                              onChange={(e) => setCustomAfter(e.target.value)}
+                              className="mt-1 w-full rounded bg-[#060b16] border border-white/15 px-2 py-1 text-xs text-white"
+                            >
+                              {passes.map((p) => (
+                                <option key={`a-${p.date}-${p.orbit_direction}`} value={p.date}>
+                                  {p.date} ({(p.orbit_direction ?? '?').slice(0, 3).toUpperCase()})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              `/change?lat=${activePt.lat}&lon=${activePt.lon}&hazard=${layerHz}${dateSuffix}`,
+                            )
+                          }
+                          className="w-full rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Compare {selectedBefore} → {selectedAfter} & Charts →
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/timeseries?lat=${activePt.lat}&lon=${activePt.lon}`)}
+                      className="inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 text-cyan-200"
+                    >
+                      <LineChart size={13} /> Open Backscatter Time Series
+                    </button>
+                    <p className="font-semibold text-white pt-1">Detect hazard here:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {HAZARDS.map((h) => (
+                        <button
+                          type="button"
+                          key={h.id}
+                          onClick={() =>
+                            navigate(`/change?lat=${activePt.lat}&lon=${activePt.lon}&hazard=${h.id}${dateSuffix}`)
+                          }
+                          className={`text-xs rounded-full px-3 py-1.5 font-medium text-white ${
+                            h.id === layerHz ? 'bg-cyan-600' : 'bg-white/10 hover:bg-white/20'
+                          }`}
+                        >
+                          {h.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )
+              })()}
             </Card>
           )}
 

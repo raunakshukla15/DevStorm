@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Search, Sparkles } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { fetchSampleResult, startHazardJob } from '../api/analysis'
+import { fetchPointInsights, fetchSampleResult, startHazardJob } from '../api/analysis'
 import { geocodePlace } from '../api/geocode'
 import { AnalysisResult } from '../components/AnalysisResult'
 import { Card } from '../components/Card'
@@ -55,6 +55,56 @@ export default function ChangeAnalysis() {
   const [elapsed, setElapsed] = useState(0)
   const [validationError, setValidationError] = useState<string | null>(null)
   const [detail, setDetail] = useState(true)
+
+  const paramStr = params.toString()
+  const [lastSyncedParams, setLastSyncedParams] = useState(paramStr)
+  if (paramStr && paramStr !== lastSyncedParams) {
+    setLastSyncedParams(paramStr)
+    const p = new URLSearchParams(paramStr)
+    const pLat = p.get('lat')
+    const pLon = p.get('lon')
+    const pBefore = p.get('before')
+    const pAfter = p.get('after')
+    const pHz = p.get('hazard')
+    const pAuto = p.get('auto')
+    if (pLat && pLon) {
+      setForm((prev) => ({
+        ...prev,
+        lat: pLat,
+        lon: pLon,
+        before: pBefore ?? prev.before,
+        after: pAfter ?? prev.after,
+      }))
+    } else if (pBefore || pAfter) {
+      setForm((prev) => ({
+        ...prev,
+        before: pBefore ?? prev.before,
+        after: pAfter ?? prev.after,
+      }))
+    }
+    if (pBefore && pAfter) setAuto(false)
+    else if (pAuto === '1') setAuto(true)
+    if (pHz && HAZARDS.some((h) => h.id === pHz)) setHazard(pHz)
+    setBbox(parseBboxParam(p.get('bbox')))
+  }
+
+  const parsedLat = Number.parseFloat(form.lat)
+  const parsedLon = Number.parseFloat(form.lon)
+  const validCoords =
+    Number.isFinite(parsedLat) &&
+    Number.isFinite(parsedLon) &&
+    parsedLat >= -90 &&
+    parsedLat <= 90 &&
+    parsedLon >= -180 &&
+    parsedLon <= 180
+
+  const passesQuery = useQuery({
+    queryKey: ['point-insights', Math.round(parsedLat * 100) / 100, Math.round(parsedLon * 100) / 100],
+    queryFn: () => fetchPointInsights(parsedLat, parsedLon),
+    enabled: validCoords,
+    staleTime: 180000,
+    retry: 0,
+  })
 
   const jobQuery = useJobPolling(activeJobId)
   const running =
@@ -231,27 +281,77 @@ export default function ChangeAnalysis() {
                   {form.lat}, {form.lon}
                 </span>
               </label>
-              {!auto && (
-                <label className="text-sm">
-                  Before
-                  <input
-                    value={form.before}
-                    onChange={(e) => setForm({ ...form, before: e.target.value })}
-                    className="mt-1 w-full bg-white/10 rounded px-2 py-1.5"
-                  />
-                </label>
-              )}
-              {!auto && (
-                <label className="text-sm">
-                  After
-                  <input
-                    value={form.after}
-                    onChange={(e) => setForm({ ...form, after: e.target.value })}
-                    className="mt-1 w-full bg-white/10 rounded px-2 py-1.5"
-                  />
-                </label>
-              )}
+              <label className="text-sm">
+                Before {auto && <span className="text-[11px] text-white/45">(auto on)</span>}
+                <input
+                  value={form.before}
+                  onChange={(e) => {
+                    setForm({ ...form, before: e.target.value })
+                    if (auto) setAuto(false)
+                  }}
+                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-white"
+                />
+              </label>
+              <label className="text-sm">
+                After {auto && <span className="text-[11px] text-white/45">(auto on)</span>}
+                <input
+                  value={form.after}
+                  onChange={(e) => {
+                    setForm({ ...form, after: e.target.value })
+                    if (auto) setAuto(false)
+                  }}
+                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-white"
+                />
+              </label>
             </div>
+            {passesQuery.data?.available && (passesQuery.data.available_passes?.length ?? 0) > 0 && (
+              <div className="rounded-lg bg-white/5 border border-white/10 p-2.5 text-xs space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-white/75">
+                    Real NASA CMR passes near ({parsedLat.toFixed(2)}, {parsedLon.toFixed(2)}):{' '}
+                    <strong className="text-cyan-300">
+                      {passesQuery.data.earliest_acquisition} → {passesQuery.data.latest_acquisition}
+                    </strong>{' '}
+                    ({passesQuery.data.available_passes!.length} dates)
+                  </span>
+                  {passesQuery.data.available_passes!.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ps = passesQuery.data!.available_passes!
+                        const newest = ps[0].date
+                        const oldest = ps[ps.length - 1].date
+                        setForm((prev) => ({ ...prev, before: oldest, after: newest }))
+                        setAuto(false)
+                      }}
+                      className="rounded bg-cyan-600/80 hover:bg-cyan-500 px-2 py-0.5 text-[11px] font-medium text-white"
+                    >
+                      Use earliest ({passesQuery.data.earliest_acquisition}) → latest ({passesQuery.data.latest_acquisition})
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  <span className="text-[11px] text-white/50">Click pass to set After:</span>
+                  {passesQuery.data.available_passes!.slice(0, 8).map((p) => (
+                    <button
+                      type="button"
+                      key={`chip-${p.date}-${p.orbit_direction}`}
+                      onClick={() => {
+                        setForm((prev) => ({ ...prev, after: p.date }))
+                        setAuto(false)
+                      }}
+                      className={`rounded px-2 py-0.5 text-[11px] ${
+                        !auto && form.after === p.date
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white/10 text-white/75 hover:bg-white/20'
+                      }`}
+                    >
+                      {p.date} ({(p.orbit_direction ?? '?').slice(0, 1).toUpperCase()})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <label className="text-xs text-white/70">
                 Latitude
