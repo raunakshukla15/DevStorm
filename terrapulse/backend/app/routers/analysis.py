@@ -2,12 +2,13 @@
 
 from datetime import datetime, timedelta
 import logging
-from typing import Optional
+from typing import List, Optional
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from app import db
+from app.limiter import RATE_LIMIT_ANALYZE, limiter
 from app.schemas import (
     AnalysisStubOut,
     GranuleSummaryOut,
@@ -16,9 +17,16 @@ from app.schemas import (
     PointInsightsResponse,
 )
 from app.services import cache
-from app.services.hazards import HAZARD_CONFIGS, resolve_short_names
+from app.services.hazards import (
+    HAZARD_CONFIGS,
+    SPECKLE_METHODS,
+    SUPPORTED_BANDS,
+    THRESHOLD_MODES,
+    resolve_short_names,
+)
 from app.services.job_runner import parse_granule_date, run_analysis_job, summarize_granule
 from app.services.nisar_provider import MAX_WINDOW_PIXELS
+from app.services.sample_data import get_sample_nisar_result
 
 logger = logging.getLogger(__name__)
 
@@ -76,24 +84,49 @@ async def change_detection(
     )
 
 
+def _parse_bbox(raw_bbox: Optional[str]) -> Optional[List[float]]:
+    if not raw_bbox:
+        return None
+    parts = [p.strip() for p in raw_bbox.split(",") if p.strip()]
+    if len(parts) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="bbox must have 4 comma-separated floats: west,south,east,north.",
+        )
+    try:
+        w, s, e, n = (float(p) for p in parts)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid bbox number: {exc}")
+    if e <= w or n <= s or w < -180 or e > 180 or s < -90 or n > 90:
+        raise HTTPException(status_code=400, detail="bbox coordinates out of bounds or inverted.")
+    return [w, s, e, n]
+
+
 @router.post(
     "/analysis/hazard",
     response_model=JobStartResponse,
     summary="Start a multi-hazard live analysis job",
     status_code=202,
 )
+@limiter.limit(RATE_LIMIT_ANALYZE)
 async def hazard_analysis(
+    request: Request,
     background_tasks: BackgroundTasks,
-    hazard: str = Query(..., description="flood | tsunami | hurricane | volcano | earthquake"),
+    hazard: str = Query(..., description="flood | tsunami | hurricane | volcano | earthquake | forest_disturbance | landslide | agriculture | deformation"),
     lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
     lon: float = Query(..., ge=-180, le=180, description="Center longitude"),
     before_date: Optional[str] = Query(
         None, description="Target before date (YYYY-MM-DD); omit both for auto latest pair"
     ),
     after_date: Optional[str] = Query(None, description="Target after date (YYYY-MM-DD)"),
-    dataset_id: str = Query("nisar_l2_gcov", description="Dataset id or CMR short name"),
-    band: str = Query("HH", description="Polarization band"),
+    dataset_id: Optional[str] = Query(None, description="Dataset id or CMR short name"),
+    band: Optional[str] = Query(None, description="Polarization band: HH | HV | VV | HH/HV"),
     window: int = Query(256, ge=64, le=MAX_WINDOW_PIXELS, description="Window size in pixels"),
+    bbox: Optional[str] = Query(None, description="Optional AOI bbox 'west,south,east,north'"),
+    speckle_filter: str = Query("none", description="Speckle filter: none | boxcar | lee"),
+    threshold_mode: str = Query("fixed", description="Threshold mode: fixed | otsu | mean_std"),
+    water_mask: bool = Query(False, description="Apply auxiliary permanent water mask metadata check"),
+    slope_mask: bool = Query(False, description="Apply auxiliary DEM terrain slope mask metadata check"),
 ):
     """Start a hazard-specific live NISAR analysis as a background job."""
     hazard = (hazard or "").lower()
@@ -116,6 +149,20 @@ async def hazard_analysis(
         if a <= b:
             raise HTTPException(status_code=400, detail="After date must be after before date.")
 
+    cfg = HAZARD_CONFIGS[hazard]
+    chosen_band = (band or cfg.get("default_band") or "HH").upper()
+    if chosen_band not in SUPPORTED_BANDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported band '{chosen_band}'. Use {SUPPORTED_BANDS}.")
+    chosen_filter = (speckle_filter or "none").lower()
+    if chosen_filter not in SPECKLE_METHODS:
+        raise HTTPException(status_code=400, detail=f"Unsupported speckle_filter '{chosen_filter}'. Use {SPECKLE_METHODS}.")
+    chosen_thresh = (threshold_mode or "fixed").lower()
+    if chosen_thresh not in THRESHOLD_MODES:
+        raise HTTPException(status_code=400, detail=f"Unsupported threshold_mode '{chosen_thresh}'. Use {THRESHOLD_MODES}.")
+
+    parsed_bbox = _parse_bbox(bbox)
+    chosen_dataset = dataset_id or cfg.get("dataset_id") or "nisar_l2_gcov"
+
     job_id = uuid.uuid4().hex[:12]
     params = {
         "hazard": hazard,
@@ -123,9 +170,14 @@ async def hazard_analysis(
         "after_date": after_date,
         "lat": lat,
         "lon": lon,
-        "dataset_id": dataset_id,
-        "band": band,
+        "dataset_id": chosen_dataset,
+        "band": chosen_band,
         "window": window,
+        "bbox": parsed_bbox,
+        "speckle_filter": chosen_filter,
+        "threshold_mode": chosen_thresh,
+        "water_mask": water_mask,
+        "slope_mask": slope_mask,
     }
     db.create_job(job_id, params)
     background_tasks.add_task(run_analysis_job, job_id, params)
@@ -191,6 +243,15 @@ async def point_insights(
         short_names_searched=resolve_short_names(dataset_id),
         note="No NISAR granules near this point in the last 90 days. Try another location or a wider area.",
     )
+
+
+@router.get(
+    "/analysis/sample",
+    summary="Guided sample NISAR result payload",
+)
+async def get_sample_analysis():
+    """Return a cached, explicitly labeled sample NISAR L2 GCOV indicator payload."""
+    return get_sample_nisar_result()
 
 
 @router.get(

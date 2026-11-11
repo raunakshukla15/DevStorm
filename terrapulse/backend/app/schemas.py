@@ -128,6 +128,8 @@ class JobSummaryOut(BaseModel):
     percentage_decrease: Optional[float] = None
     percentage_disturbed: Optional[float] = None
     affected_area_km2: Optional[float] = None
+    confidence_score: Optional[float] = None
+    severity: Optional[str] = None
     outlines: int = 0
     error: Optional[str] = None
     created_at: str
@@ -180,3 +182,111 @@ class MetadataResponse(BaseModel):
     data_provider: str
     access_methods: List[str]
     authentication: str
+
+
+class AoiCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    bbox: List[float] = Field(..., min_length=4, max_length=4)
+
+
+class AoiOut(BaseModel):
+    id: int
+    name: str
+    bbox: List[float]
+    area_km2: float
+    created_at: str
+
+
+class LiveEventOut(BaseModel):
+    id: str
+    source: str
+    hazard: str
+    title: str
+    lat: float
+    lon: float
+    date: str
+    magnitude: Optional[float] = None
+    url: Optional[str] = None
+    category: Optional[str] = None
+
+
+class LiveEventsResponse(BaseModel):
+    events: List[LiveEventOut]
+    warnings: List[str] = Field(default_factory=list)
+
+
+class TimeseriesCreate(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    band: str = "HH"
+    months: int = Field(6, ge=1, le=24)
+    dataset_id: str = "nisar_l2_gcov"
+
+
+class TimeseriesPointOut(BaseModel):
+    id: Optional[int] = None
+    granule_id: Optional[str] = None
+    acquisition_date: str
+    mean_db: float
+    std_db: float
+    orbit_direction: Optional[str] = "unknown"
+    valid_pixels: Optional[int] = None
+
+
+class TimeseriesOut(BaseModel):
+    series_id: str
+    lat: float
+    lon: float
+    band: str
+    months: int
+    status: str
+    total_granules: Optional[int] = None
+    processed_granules: Optional[int] = None
+    error: Optional[str] = None
+    created_at: str
+    points: List[TimeseriesPointOut] = Field(default_factory=list)
+
+
+class WatchlistCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    hazard: str = "flood"
+    severity_threshold: str = "Medium"
+    email: Optional[str] = None
+
+
+class WatchlistOut(BaseModel):
+    id: int
+    name: str
+    lat: float
+    lon: float
+    hazard: str
+    severity_threshold: str
+    email: Optional[str] = None
+    last_checked: Optional[str] = None
+    last_granule_date: Optional[str] = None
+    created_at: str
+
+
+class AlertOut(BaseModel):
+    id: int
+    watchlist_id: Optional[int] = None
+    job_id: Optional[str] = None
+    hazard: str
+    location_name: str
+    severity: str
+    message: str
+    granule_id: Optional[str] = None
+    acknowledged: bool
+    created_at: str
+
+
+class DiscoveredCollectionOut(BaseModel):
+    short_name: str
+    version: str
+    title: str
+    concept_id: Optional[str] = None
+    family: str
+    processing_level: Optional[str] = None
+    abstract: str = ""

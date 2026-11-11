@@ -9,9 +9,15 @@ import numpy as np
 import xarray as xr
 
 from app import db
-from app.services import cache
+from app.services import cache, masks, renders
 from app.services.flood_analysis import (
+    CONFIDENCE_FORMULA,
+    SEVERITY_RULE,
+    apply_speckle_filter,
     calculate_backscatter_difference,
+    compute_otsu_threshold,
+    compute_polygon_confidence,
+    compute_severity_area_confidence,
     export_geojson,
     validate_observation_compatibility,
 )
@@ -140,6 +146,202 @@ def _window_bounds_wgs84(
         return None
 
 
+def _run_insar_deformation_job(
+    job_id: str,
+    provider: Any,
+    config: Dict[str, Any],
+    params: Dict[str, Any],
+    fail,
+) -> None:
+    """Execute a NISAR L2 GUNW interferometric LOS displacement job."""
+    lat, lon = float(params["lat"]), float(params["lon"])
+    aoi_bbox = params.get("bbox")
+    req_window = max(64, min(int(params.get("window") or 256), MAX_WINDOW_PIXELS))
+    dataset_id = params.get("dataset_id") or config.get("dataset_id", "nisar_l2_gunw")
+    if dataset_id == "nisar_l2_gcov":
+        dataset_id = "nisar_l2_gunw"
+
+    set_stage(job_id, "searching GUNW interferograms", 25)
+    search_bbox = (
+        [
+            min(float(aoi_bbox[0]), lon - 0.5),
+            min(float(aoi_bbox[1]), lat - 0.5),
+            max(float(aoi_bbox[2]), lon + 0.5),
+            max(float(aoi_bbox[3]), lat + 0.5),
+        ]
+        if aoi_bbox and len(aoi_bbox) == 4
+        else [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]
+    )
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=180)
+    before_date = params.get("before_date") or start_dt.strftime("%Y-%m-%d")
+    after_date = params.get("after_date") or end_dt.strftime("%Y-%m-%d")
+
+    granules: List[Dict[str, Any]] = []
+    used_sn = None
+    for sn in resolve_short_names(dataset_id):
+        try:
+            found = cache.cached_search(provider, sn, (before_date, after_date), search_bbox, count=20)
+            if found:
+                granules = found
+                used_sn = sn
+                break
+        except Exception as e:
+            logger.warning("GUNW CMR search error for %s: %s", sn, e)
+
+    if not granules:
+        fail(
+            f"No NISAR L2 GUNW interferometric granules found near ({lat}, {lon}) "
+            f"in {before_date}..{after_date}. Ground displacement cannot be computed from GCOV backscatter alone."
+        )
+        return
+
+    granule = granules[0]
+    set_stage(job_id, "streaming GUNW phase & coherence", 60)
+    try:
+        gunw = provider.stream_gunw_window(
+            granule.get("https_link"), lat=lat, lon=lon, window=req_window, bbox=aoi_bbox
+        )
+    except Exception as e:
+        db.save_job_result(
+            job_id,
+            {
+                "success": True,
+                "status": "metadata_only",
+                "method": "insar_unwrapped_phase_los",
+                "hazard": "deformation",
+                "hazard_label": config["label"],
+                "location": {"lat": lat, "lon": lon},
+                "short_name": used_sn,
+                "after_granule": summarize_granule(granule),
+                "processing_note": (
+                    f"GUNW interferogram found, but HTTPS group streaming failed ({e}). "
+                    "Use the product link for external ISCE3/HDF5 inspection."
+                ),
+                "caveats_and_limitations": [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
+                "produced_at": datetime.now().isoformat() + "Z",
+            },
+        )
+        return
+
+    set_stage(job_id, "analyzing LOS displacement", 85)
+    los_cm = np.asarray(gunw["los_displacement_cm"], dtype=np.float64)
+    coh = gunw.get("coherence")
+    valid = np.isfinite(los_cm)
+    if coh is not None:
+        coh_arr = np.asarray(coh, dtype=np.float64)
+        valid = valid & np.isfinite(coh_arr) & (coh_arr >= 0.35)
+        mean_coh = float(np.nanmean(coh_arr))
+    else:
+        coh_arr = np.ones_like(los_cm)
+        mean_coh = 0.5
+
+    los_masked = np.where(valid, los_cm, np.nan)
+    thr_cm = float(config.get("threshold_cm", 2.5))
+    valid_px = int(np.sum(valid))
+    deformed_px = int(np.sum(np.abs(los_masked[valid]) > thr_cm)) if valid_px > 0 else 0
+    pct_def = float(deformed_px / valid_px * 100.0) if valid_px > 0 else 0.0
+    sp = gunw.get("spacing_m") or [80.0, 80.0]
+    area_km2 = deformed_px * abs(float(sp[0])) * abs(float(sp[1])) / 1e6
+
+    gj = export_geojson(
+        difference_mask=los_masked,
+        crs=gunw.get("crs", "EPSG:4326"),
+        threshold=thr_cm,
+        x_coords=gunw["x_coords"],
+        y_coords=gunw["y_coords"],
+        spacing_m=sp,
+        mode="magnitude",
+        same_orbit=True,
+        valid_fraction=valid_px / max(los_cm.size, 1),
+    )
+    images = renders.save_job_visuals(
+        job_id,
+        coh_arr,
+        los_cm,
+        los_masked,
+        gunw["x_coords"],
+        gunw["y_coords"],
+        gunw.get("crs", "EPSG:4326"),
+    )
+    bounds_wgs84 = _window_bounds_wgs84(
+        gunw["x_coords"], gunw["y_coords"], gunw.get("crs", "EPSG:4326"), sp
+    )
+    conf_score, conf_level = compute_polygon_confidence(
+        mean_diff_db=-abs(float(np.nanmean(np.abs(los_masked)))) if valid_px else 0.0,
+        threshold_db=-thr_cm,
+        pixel_count=max(deformed_px, 1),
+        same_orbit=True,
+        valid_fraction=valid_px / max(los_cm.size, 1),
+    )
+    sev_level, _ = compute_severity_area_confidence(area_km2, conf_score)
+
+    db.save_job_result(
+        job_id,
+        {
+            "success": True,
+            "status": "analyzed",
+            "method": "insar_unwrapped_phase_los (cm)",
+            "hazard": "deformation",
+            "hazard_label": config["label"],
+            "interpretation": config["interpretation"],
+            "data_source": "NASA-ISRO NISAR L2 GUNW via NASA Earthdata",
+            "requested_dates": {"before": before_date, "after": after_date},
+            "actual_granule_dates": {"before": None, "after": granule.get("acquisition_date")},
+            "same_orbit_pair": True,
+            "location": {"lat": lat, "lon": lon},
+            "short_name": used_sn,
+            "polarization_band": "HH",
+            "threshold_db": thr_cm,
+            "detection_mode": "insar_phase",
+            "severity": sev_level,
+            "severity_rule": SEVERITY_RULE,
+            "windows": {
+                "size": max(los_cm.shape),
+                "requested_window": req_window,
+                "before_layer": "coherenceMagnitude",
+                "after_layer": gunw["variable"],
+                "before_origin": gunw["window_origin"],
+                "before_shape": list(gunw["shape"]),
+                "after_origin": gunw["window_origin"],
+                "after_shape": list(gunw["shape"]),
+                "crs": gunw.get("crs", "EPSG:4326"),
+                "epsg": gunw.get("epsg"),
+                "bounds": bounds_wgs84,
+                "stride": gunw.get("stride", 1),
+                "downsampled": int(gunw.get("stride", 1)) > 1,
+                "note": "LOS interferometric displacement (cm) filtered at coherence >= 0.35.",
+            },
+            "after_granule": summarize_granule(granule),
+            "images": images,
+            "analysis": {
+                "mean_backscatter_difference_db": round(float(np.nanmean(los_masked)), 3) if valid_px else None,
+                "std_difference_db": round(float(np.nanstd(los_masked)), 3) if valid_px else None,
+                "percentage_decrease": round(pct_def, 2),
+                "percentage_disturbed": round(pct_def, 2),
+                "affected_area_km2": round(area_km2, 4),
+                "mean_coherence": round(mean_coh, 3),
+                "area_basis": "coherent pixels |LOS| > threshold x product spacing",
+                "valid_pixels": valid_px,
+                "total_pixels": int(los_cm.size),
+            },
+            "results": {"deformation_outlines": gj},
+            "caveats_and_limitations": [
+                "InSAR LOS phase requires phase unwrapping verification and orbital ramp removal",
+            ] + [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
+            "confidence": {
+                "score": conf_score,
+                "level": conf_level,
+                "formula": CONFIDENCE_FORMULA,
+                "based_on": "GUNW unwrapped phase + coherenceMagnitude >= 0.35",
+                "quality": "insar-indicator",
+                "requires_validation": "Cross-check GNSS stations and coherence maps",
+            },
+            "produced_at": datetime.now().isoformat() + "Z",
+        },
+    )
+
+
 def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
     """Background worker: live granule discovery + windowed change detection."""
 
@@ -160,7 +362,13 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
     after_date = params.get("after_date")
     auto_dates = not before_date or not after_date
     lat, lon = float(params["lat"]), float(params["lon"])
-    dataset_id, band = params["dataset_id"], params["band"]
+    aoi_bbox = params.get("bbox")
+    dataset_id = params.get("dataset_id") or config.get("dataset_id") or "nisar_l2_gcov"
+    band = (params.get("band") or config.get("default_band") or "HH").upper()
+    speckle_filter = (params.get("speckle_filter") or "none").lower()
+    threshold_mode = (params.get("threshold_mode") or "fixed").lower()
+    water_mask = bool(params.get("water_mask", False))
+    slope_mask = bool(params.get("slope_mask", False))
     req_window = max(64, min(int(params.get("window") or 256), MAX_WINDOW_PIXELS))
     before_dt = after_dt = None
 
@@ -185,9 +393,21 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             )
             return
 
+        if config.get("mode") == "insar_phase":
+            _run_insar_deformation_job(job_id, provider, config, params, fail)
+            return
+
         set_stage(job_id, "searching CMR catalogs", 20)
         half = timedelta(days=SEARCH_HALF_WINDOW_DAYS)
-        bbox = [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]
+        if aoi_bbox and len(aoi_bbox) == 4:
+            bbox = [
+                min(float(aoi_bbox[0]), lon - 0.5),
+                min(float(aoi_bbox[1]), lat - 0.5),
+                max(float(aoi_bbox[2]), lon + 0.5),
+                max(float(aoi_bbox[3]), lat + 0.5),
+            ]
+        else:
+            bbox = [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]
         before_g = after_g = None
         pair_info: Dict[str, Any] = {}
         used_short_name = None
@@ -280,11 +500,11 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fb = pool.submit(
-                    cache.cached_window, provider, before_g, band, req_window, lat, lon
+                    cache.cached_window, provider, before_g, band, req_window, lat, lon, aoi_bbox
                 )
                 set_stage(job_id, "streaming granule windows (2/2)", 60)
                 fa = pool.submit(
-                    cache.cached_window, provider, after_g, band, req_window, lat, lon
+                    cache.cached_window, provider, after_g, band, req_window, lat, lon, aoi_bbox
                 )
                 b_win, a_win = fb.result(), fa.result()
         except ValueError as e:
@@ -316,27 +536,42 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             )
             return
 
-        set_stage(job_id, "computing backscatter difference", 85)
+        set_stage(job_id, f"computing backscatter difference ({speckle_filter})", 82)
 
         eps = 1e-9
-        b_db = 10.0 * np.log10(np.maximum(np.asarray(b_win["values"], dtype=np.float64), eps))
-        a_db = 10.0 * np.log10(np.maximum(np.asarray(a_win["values"], dtype=np.float64), eps))
+        b_raw_vals = np.asarray(b_win["values"], dtype=np.float64)
+        a_raw_vals = np.asarray(a_win["values"], dtype=np.float64)
+        b_raw_db = np.where(
+            np.isfinite(b_raw_vals) & (b_raw_vals > 0),
+            10.0 * np.log10(np.maximum(b_raw_vals, eps)),
+            np.nan,
+        )
+        a_raw_db = np.where(
+            np.isfinite(a_raw_vals) & (a_raw_vals > 0),
+            10.0 * np.log10(np.maximum(a_raw_vals, eps)),
+            np.nan,
+        )
+
         bx = np.asarray(
-            b_win.get("x_coords") if b_win.get("x_coords") is not None else np.arange(b_db.shape[1]),
+            b_win.get("x_coords") if b_win.get("x_coords") is not None else np.arange(b_raw_db.shape[1]),
             dtype=np.float64,
         )
         by = np.asarray(
-            b_win.get("y_coords") if b_win.get("y_coords") is not None else np.arange(b_db.shape[0]),
+            b_win.get("y_coords") if b_win.get("y_coords") is not None else np.arange(b_raw_db.shape[0]),
             dtype=np.float64,
         )
         ax = np.asarray(
-            a_win.get("x_coords") if a_win.get("x_coords") is not None else np.arange(a_db.shape[1]),
+            a_win.get("x_coords") if a_win.get("x_coords") is not None else np.arange(a_raw_db.shape[1]),
             dtype=np.float64,
         )
         ay = np.asarray(
-            a_win.get("y_coords") if a_win.get("y_coords") is not None else np.arange(a_db.shape[0]),
+            a_win.get("y_coords") if a_win.get("y_coords") is not None else np.arange(a_raw_db.shape[0]),
             dtype=np.float64,
         )
+
+        b_db = apply_speckle_filter(b_raw_db, method=speckle_filter, size=5, is_db=True)
+        a_db = apply_speckle_filter(a_raw_db, method=speckle_filter, size=5, is_db=True)
+
         ob = (before_g.get("orbit_direction") or "unknown").lower()
         oa = (after_g.get("orbit_direction") or "unknown").lower()
         before_ds = xr.Dataset({"sigma0_db": (["y", "x"], b_db)}, coords={"y": by, "x": bx})
@@ -367,6 +602,12 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             sp_align = b_win.get("spacing_m") or a_win.get("spacing_m") or [20.0, 20.0]
             tol = max(abs(float(sp_align[0])), abs(float(sp_align[1]))) * 1.5
             after_ds = after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)
+            if a_raw_db.shape == ay.shape + ax.shape:
+                raw_after_ds = xr.Dataset({"sigma0_db": (["y", "x"], a_raw_db)}, coords={"y": ay, "x": ax})
+                a_raw_db = np.asarray(
+                    raw_after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)["sigma0_db"].values,
+                    dtype=np.float64,
+                )
 
         n = int(b_db.shape[0])
         compatibility = validate_observation_compatibility(before_ds, after_ds)
@@ -390,50 +631,125 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
         difference_result.pop("before_backscatter", None)
         difference_result.pop("after_backscatter", None)
 
+        raw_stats = None
+        if speckle_filter != "none" and b_raw_db.shape == a_raw_db.shape:
+            raw_diff = a_raw_db - b_raw_db
+            raw_fin = raw_diff[np.isfinite(raw_diff)]
+            if raw_fin.size > 0:
+                raw_stats = {
+                    "mean_difference_db": round(float(np.mean(raw_fin)), 3),
+                    "std_difference_db": round(float(np.std(raw_fin)), 3),
+                    "percentage_decrease": round(float(np.sum(raw_fin < -2.0) / raw_fin.size * 100.0), 2),
+                }
+
         mode = config.get("mode", "decrease")
         mag_db = float(config.get("magnitude_db", abs(FLOOD_DB_THRESHOLD)))
         thr_db = float(config.get("threshold_db", FLOOD_DB_THRESHOLD))
+        if difference_mask is not None and threshold_mode == "otsu":
+            if mode == "magnitude":
+                mag_db = abs(compute_otsu_threshold(difference_mask, direction="magnitude"))
+            else:
+                thr_db = compute_otsu_threshold(difference_mask, direction="negative")
+        elif difference_mask is not None and threshold_mode == "mean_std":
+            fin = difference_mask[np.isfinite(difference_mask)]
+            if fin.size > 16:
+                if mode == "magnitude":
+                    mag_db = round(float(np.mean(np.abs(fin)) + 1.5 * np.std(np.abs(fin))), 3)
+                else:
+                    thr_db = round(float(np.mean(fin) - 1.5 * np.std(fin)), 3)
+
         valid = int(difference_result.get("valid_pixels") or 0)
+        total_px = int(difference_result.get("total_pixels") or max(b_db.size, 1))
         if difference_mask is not None and valid > 0:
             disturbed_pct = float(np.sum(np.abs(difference_mask) > mag_db) / valid * 100)
         else:
             disturbed_pct = 0.0
-        if mode == "magnitude":
-            outline_mask = -np.abs(difference_mask) if difference_mask is not None else None
-            outline_thr = -mag_db
-            outline_label = "disturbance_outlines"
-        else:
-            outline_mask = difference_mask
-            outline_thr = thr_db
-            outline_label = "flood_outlines"
+
+        outline_thr = -mag_db if mode == "magnitude" else thr_db
+        outline_label = "disturbance_outlines" if mode == "magnitude" else "flood_outlines"
+
+        b_dt_p = parse_granule_date(before_g)
+        a_dt_p = parse_granule_date(after_g)
+        temporal_days = (
+            abs((a_dt_p - b_dt_p).days) if b_dt_p is not None and a_dt_p is not None else None
+        )
+        valid_fraction = float(valid) / max(total_px, 1)
+        same_orbit = pair_info.get("same_orbit")
 
         sp = b_win.get("spacing_m") or a_win.get("spacing_m")
         crs_str = b_win.get("crs", "EPSG:4326")
         geojson_result = export_geojson(
-            difference_mask=outline_mask,
+            difference_mask=difference_mask,
             crs=crs_str,
             threshold=outline_thr,
             x_coords=bx,
             y_coords=by,
             spacing_m=sp,
+            mode=mode,
+            same_orbit=same_orbit,
+            temporal_days=temporal_days,
+            valid_fraction=valid_fraction,
         )
         bounds_wgs84 = _window_bounds_wgs84(bx, by, crs_str, sp)
 
         affected_area_km2 = None
+        total_outline_px = 0
         try:
+            total_outline_px = sum(
+                int(f.get("properties", {}).get("pixel_count", 0))
+                for f in geojson_result.get("features", [])
+            )
             if sp:
-                px = sum(
-                    int(f.get("properties", {}).get("pixel_count", 0))
-                    for f in geojson_result.get("features", [])
-                )
-                affected_area_km2 = px * abs(float(sp[0])) * abs(float(sp[1])) / 1e6
+                affected_area_km2 = total_outline_px * abs(float(sp[0])) * abs(float(sp[1])) / 1e6
         except Exception:
             affected_area_km2 = None
+
+        set_stage(job_id, "rendering visual overlays", 93)
+        images = renders.save_job_visuals(
+            job_id=job_id,
+            before_db=b_db,
+            after_db=a_db,
+            difference_db=difference_mask,
+            x_coords=bx,
+            y_coords=by,
+            crs=crs_str,
+        )
+        aux_raw = masks.evaluate_auxiliary_masks(
+            bounds_wgs84,
+            b_db.shape,
+            apply_water_mask=water_mask,
+            apply_slope_mask=slope_mask,
+        )
+        aux_notes = (
+            [str(aux_raw["note"])]
+            if (water_mask or slope_mask) and aux_raw.get("note")
+            else []
+        )
+        aux_masks = {
+            "water_mask_requested": water_mask,
+            "slope_mask_requested": slope_mask,
+            "masks_applied": False,
+            "masked_pixels": int(aux_raw.get("masked_pixels", 0)),
+            "status": "metadata_only" if (water_mask or slope_mask) else "not_requested",
+            "notes": aux_notes,
+        }
+
+        used_thr_val = thr_db if mode == "decrease" else mag_db
+        mean_diff = difference_result.get("mean_difference") or 0.0
+        conf_score, conf_level = compute_polygon_confidence(
+            mean_diff_db=-abs(float(mean_diff)) if mode == "magnitude" else float(mean_diff),
+            threshold_db=-abs(float(used_thr_val)),
+            pixel_count=max(total_outline_px, valid // 100, 1),
+            same_orbit=same_orbit,
+            temporal_days=temporal_days,
+            valid_fraction=valid_fraction,
+        )
+        severity_level, _ = compute_severity_area_confidence(affected_area_km2, conf_score)
 
         result_payload = {
             "success": True,
             "status": "analyzed",
-            "method": "backscatter_difference_indicator (dB units)",
+            "method": f"backscatter_difference_indicator (dB, {speckle_filter} speckle, {threshold_mode} threshold)",
             "hazard": hazard,
             "hazard_label": config["label"],
             "interpretation": config["interpretation"],
@@ -444,12 +760,17 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
                 "before": before_g.get("acquisition_date"),
                 "after": after_g.get("acquisition_date"),
             },
-            "same_orbit_pair": pair_info.get("same_orbit", False),
+            "same_orbit_pair": same_orbit,
             "location": {"lat": lat, "lon": lon},
+            "bbox": aoi_bbox,
             "short_name": used_short_name,
             "polarization_band": band,
-            "threshold_db": thr_db if mode == "decrease" else mag_db,
+            "threshold_db": used_thr_val,
+            "threshold_mode": threshold_mode,
+            "speckle_filter": speckle_filter,
             "detection_mode": mode,
+            "severity": severity_level,
+            "severity_rule": SEVERITY_RULE,
             "windows": {
                 "size": n,
                 "requested_window": req_window,
@@ -462,7 +783,9 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
                 "crs": crs_str,
                 "epsg": b_win.get("epsg"),
                 "bounds": bounds_wgs84,
-                "note": "Location-centered window comparison in dB, not full-swath analysis.",
+                "stride": b_win.get("stride", 1),
+                "downsampled": bool(b_win.get("downsampled", False)),
+                "note": "Location/AOI window comparison in dB, not full-swath analysis.",
             },
             "before_granule": summarize_granule(before_g),
             "after_granule": summarize_granule(after_g),
@@ -470,6 +793,9 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
                 "compatible": compatibility.get("compatible", False),
                 "warnings": compatibility.get("warnings", []),
             },
+            "images": images,
+            "raw_stats": raw_stats,
+            "auxiliary_masks": aux_masks,
             "analysis": {
                 "mean_backscatter_difference_db": difference_result.get("mean_difference"),
                 "std_difference_db": difference_result.get("std_difference"),
@@ -481,22 +807,26 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
                     if affected_area_km2 is not None
                     else "unavailable (no spacing metadata in product)"
                 ),
-                "valid_pixels": difference_result.get("valid_pixels"),
-                "total_pixels": difference_result.get("total_pixels"),
+                "valid_pixels": valid,
+                "total_pixels": total_px,
             },
             "results": {outline_label: geojson_result},
             "caveats_and_limitations": [
                 f"This is a change INDICATOR only, not a validated {hazard} map",
-                "Comparison covers a location-centered window of each granule in dB units",
+                "Comparison covers a bounded window of each granule in dB units",
                 "Backscatter changes can be caused by: vegetation condition, "
                 "soil moisture, terrain — not just the target hazard",
                 "NISAR L-band radar may miss changes under dense canopy",
                 "Single-pair comparison cannot attribute change to a specific event",
                 "Validate with field observations and auxiliary data",
             ]
+            + ([str(n) for n in aux_masks.get("notes", [])])
             + [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
             "confidence": {
-                "based_on": f"dB backscatter difference ({mode} mode) on live granule windows",
+                "score": conf_score,
+                "level": conf_level,
+                "formula": CONFIDENCE_FORMULA,
+                "based_on": f"dB backscatter difference ({mode}, {speckle_filter} filter, {threshold_mode} threshold)",
                 "quality": "indicator-level",
                 "requires_validation": "Field validation and auxiliary data recommended",
             },
@@ -504,12 +834,13 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
         }
         db.save_job_result(job_id, result_payload)
         logger.info(
-            "Job %s complete [%s]: mean diff=%.3f dB, %.1f%% decrease, %.1f%% disturbed",
+            "Job %s complete [%s]: mean diff=%.3f dB, %.1f%% decrease, %.1f%% disturbed (sev=%s)",
             job_id,
             hazard,
             difference_result.get("mean_difference") or 0.0,
             difference_result.get("percentage_decrease"),
             disturbed_pct,
+            severity_level,
         )
     except Exception as e:
         logger.error("Job %s crashed: %s", job_id, e, exc_info=True)

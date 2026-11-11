@@ -3,10 +3,32 @@
 from typing import Any, Dict, List
 
 SHORT_NAME_CANDIDATES: Dict[str, List[str]] = {
-    "nisar_l2_gcov": ["NISAR_L2_GCOV_PROVISIONAL_V1", "NISAR_L2_GCOV_BETA_V1"],
+    "nisar_l2_gcov": [
+        "NISAR_L2_GCOV_PROVISIONAL_V1",
+        "NISAR_L2_GCOV_V1",
+        "NISAR_L2_GCOV_BETA_V1",
+    ],
     "nisar_l2_gcov_provisional": ["NISAR_L2_GCOV_PROVISIONAL_V1"],
     "nisar_l2_gcov_beta": ["NISAR_L2_GCOV_BETA_V1"],
+    "nisar_l2_gunw": [
+        "NISAR_L2_GUNW_PROVISIONAL_V1",
+        "NISAR_L2_GUNW_V1",
+        "NISAR_L2_GUNW_BETA_V1",
+    ],
+    "nisar_l2_gslc": [
+        "NISAR_L2_GSLC_PROVISIONAL_V1",
+        "NISAR_L2_GSLC_V1",
+        "NISAR_L2_GSLC_BETA_V1",
+    ],
+    "nisar_l3_sme2": [
+        "NISAR_L3_SME2_PROVISIONAL_V1",
+        "NISAR_L3_SME2_BETA_V1",
+    ],
 }
+
+SUPPORTED_BANDS = ("HH", "HV", "VV", "HH/HV")
+SPECKLE_METHODS = ("none", "boxcar", "lee")
+THRESHOLD_MODES = ("fixed", "otsu", "mean_std")
 
 # NISAR revisit is ~12 days, so exact-date searches usually miss.
 SEARCH_HALF_WINDOW_DAYS = 6
@@ -86,6 +108,67 @@ HAZARD_CONFIGS: Dict[str, Dict[str, Any]] = {
             "NOT a displacement measurement — true ground deformation "
             "requires InSAR (interferometric) products, not backscatter",
             "Cannot give magnitude, depth or fault slip",
+        ],
+    },
+    "forest_disturbance": {
+        "label": "Forest disturbance / canopy loss",
+        "mode": "decrease",
+        "threshold_db": -2.0,
+        "default_band": "HV",
+        "interpretation": (
+            "Cross-polarized L-band HV backscatter is dominated by volumetric "
+            "branch/canopy scattering. Clearing, blowdown or burn loss causes "
+            "a strong HV decrease (>2 dB drop)."
+        ),
+        "cannot_say": [
+            "Cannot distinguish selective logging from windthrow or seasonal leaf drop",
+            "Dense tropical forest may partially saturate L-band HV",
+        ],
+    },
+    "landslide": {
+        "label": "Landslide / slope failure scar",
+        "mode": "magnitude",
+        "magnitude_db": 2.0,
+        "default_band": "HV",
+        "interpretation": (
+            "Slope failures expose bare soil/rock and strip vegetation, causing "
+            "strong backscatter change (>2 dB magnitude). Cross-check against "
+            "terrain slope and optical imagery."
+        ),
+        "cannot_say": [
+            "Cannot separate landslides from forest clearing without DEM slope context",
+            "Steep terrain radar layover/shadowing reduces visibility",
+        ],
+    },
+    "agriculture": {
+        "label": "Agriculture / crop phenology & harvest",
+        "mode": "magnitude",
+        "magnitude_db": 2.0,
+        "default_band": "HH/HV",
+        "interpretation": (
+            "HH/HV polarization ratio tracks canopy structure vs. bare soil/flooded "
+            "paddy surfaces: harvesting, tillage and crop emergence produce strong "
+            "cross-ratio shifts (>2 dB)."
+        ),
+        "cannot_say": [
+            "Cannot identify crop species or yield directly from single-pair SAR",
+            "Rainfall wetting and irrigation events alter HH/HV alongside growth",
+        ],
+    },
+    "deformation": {
+        "label": "Ground deformation (NISAR GUNW InSAR)",
+        "mode": "insar_phase",
+        "threshold_cm": 2.5,
+        "dataset_id": "nisar_l2_gunw",
+        "interpretation": (
+            "Streams NISAR L2 GUNW unwrapped interferometric phase (converted to "
+            "line-of-sight displacement in cm via L-band lambda ~ 24 cm) alongside "
+            "interferometric coherence."
+        ),
+        "cannot_say": [
+            "LOS displacement measures motion along radar line of sight only, not 3D vectors",
+            "Requires high coherence (>= 0.35); vegetated/water pixels decorrelate",
+            "GUNW products may be absent in early operational coverage; falls back transparently",
         ],
     },
 }

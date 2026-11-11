@@ -74,18 +74,28 @@ def cached_window(
     window: int = 256,
     lat: Optional[float] = None,
     lon: Optional[float] = None,
+    bbox: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     key = granule_key(granule) or ""
-    lat_k = f"{lat:.4f}" if lat is not None else "center"
-    lon_k = f"{lon:.4f}" if lon is not None else "center"
-    cache_key = f"{key}:{band}:{window}:{lat_k}:{lon_k}"
+    if bbox and len(bbox) == 4:
+        loc_k = "bbox:" + ",".join(f"{float(v):.4f}" for v in bbox)
+    else:
+        lat_k = f"{lat:.4f}" if lat is not None else "center"
+        lon_k = f"{lon:.4f}" if lon is not None else "center"
+        loc_k = f"{lat_k}:{lon_k}"
+    cache_key = f"{key}:{band}:{window}:{loc_k}"
     with cache_lock:
         hit = window_cache.get(cache_key)
     if hit is not None:
         logger.info("Window cache hit for %s", (granule.get("title") or "")[:40])
         return hit
     values = provider.stream_backscatter_window(
-        granule.get("https_link"), band=band, window=window, lat=lat, lon=lon
+        granule.get("https_link"),
+        band=band,
+        window=window,
+        lat=lat,
+        lon=lon,
+        bbox=bbox,
     )
     with cache_lock:
         window_cache[cache_key] = values

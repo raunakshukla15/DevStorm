@@ -4,7 +4,7 @@ import logging
 from typing import List
 from fastapi import APIRouter
 
-from app.schemas import DatasetDetailOut, DatasetOut, RegionOut
+from app.schemas import DatasetDetailOut, DatasetOut, DiscoveredCollectionOut, RegionOut
 from app.services import cache
 from app.services.hazards import resolve_short_names
 
@@ -45,31 +45,70 @@ async def get_datasets():
         DatasetOut(
             id="nisar_l2_gcov",
             short_name="NISAR_L2_GCOV_PROVISIONAL_V1",
-            fallback_short_name="NISAR_L2_GCOV_BETA_V1",
+            fallback_short_name="NISAR_L2_GCOV_V1",
             name="NISAR Level-2 Geocoded Polarimetric Covariance (PROVISIONAL)",
             provider="NASA/ISRO via ASF DAAC",
             description=(
-                "Calibrated, geocoded polarimetric covariance grids. "
-                "Used by TerraPulse for backscatter change indicators."
+                "Calibrated, geocoded polarimetric covariance grids (~20-30 m). "
+                "Used by TerraPulse for HH/HV/VV backscatter change indicators."
             ),
             product_type="Geocoded Polarimetric products",
-            spatial_resolution="~30 m",
+            spatial_resolution="~20-30 m",
             polarizations=["HH", "HV", "VV"],
         ),
         DatasetOut(
-            id="nisar_l2_gcov_beta",
-            short_name="NISAR_L2_GCOV_BETA_V1",
-            name="NISAR Level-2 Geocoded Polarimetric Covariance (BETA)",
+            id="nisar_l2_gunw",
+            short_name="NISAR_L2_GUNW_PROVISIONAL_V1",
+            fallback_short_name="NISAR_L2_GUNW_BETA_V1",
+            name="NISAR Level-2 Geocoded Unwrapped Interferogram (GUNW)",
             provider="NASA/ISRO via ASF DAAC",
             description=(
-                "Pre-calibration GCOV release. Useful where PROVISIONAL "
-                "coverage is unavailable."
+                "L-band interferometric unwrapped phase & coherence (~80 m) for "
+                "surface deformation / ground motion indicators."
             ),
-            product_type="Geocoded Polarimetric products",
-            spatial_resolution="~30 m",
+            product_type="Geocoded InSAR Interferogram",
+            spatial_resolution="~80 m",
+            polarizations=["HH", "VV"],
+        ),
+        DatasetOut(
+            id="nisar_l2_gslc",
+            short_name="NISAR_L2_GSLC_PROVISIONAL_V1",
+            fallback_short_name="NISAR_L2_GSLC_BETA_V1",
+            name="NISAR Level-2 Geocoded Single-Look Complex (GSLC)",
+            provider="NASA/ISRO via ASF DAAC",
+            description="Geocoded complex SAR amplitude & phase imagery.",
+            product_type="Geocoded Complex SAR",
+            spatial_resolution="~5-10 m",
             polarizations=["HH", "HV", "VV"],
         ),
+        DatasetOut(
+            id="nisar_l3_sme2",
+            short_name="NISAR_L3_SME2_PROVISIONAL_V1",
+            fallback_short_name="NISAR_L3_SME2_BETA_V1",
+            name="NISAR Level-3 Soil Moisture (SME2)",
+            provider="NASA/ISRO via ASF DAAC",
+            description="200 m L-band soil moisture product for agricultural and drought context.",
+            product_type="Level-3 Soil Moisture",
+            spatial_resolution="~200 m",
+            polarizations=["HH", "HV"],
+        ),
     ]
+
+
+@router.get(
+    "/datasets/discover",
+    response_model=List[DiscoveredCollectionOut],
+    summary="Discover all live NISAR collections in NASA CMR",
+)
+async def discover_datasets():
+    """Query NASA Earthdata CMR dynamically for published NISAR collections."""
+    provider = cache.get_provider()
+    try:
+        cols = provider.discover_nisar_collections(keyword="NISAR", count=50)
+    except Exception as e:
+        logger.warning("CMR discovery failed: %s", e)
+        return []
+    return [DiscoveredCollectionOut(**c) for c in cols]
 
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetDetailOut, summary="Get dataset details")

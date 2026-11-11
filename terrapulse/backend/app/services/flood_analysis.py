@@ -314,22 +314,171 @@ def validate_observation_compatibility(
         }
 
 
+CONFIDENCE_FORMULA = (
+    "0.40 * min(1, (|mean_diff_db - threshold_db| + 1) / 5) + "
+    "0.25 * min(1, log10(pixels + 1) / log10(101)) + "
+    "0.20 * orbit_weight(same=1.0, unknown=0.65, cross=0.35) + "
+    "0.15 * valid_fraction * temporal_decay"
+)
+
+SEVERITY_RULE = (
+    "High: affected_area_km2 >= 2.0 AND confidence >= 0.65 "
+    "(or affected_area_km2 >= 10.0 AND confidence >= 0.45); "
+    "Medium: affected_area_km2 >= 0.25 AND confidence >= 0.45; "
+    "Low: smaller footprint or Low confidence."
+)
+
+
+def _nan_uniform_filter(arr: np.ndarray, size: int) -> np.ndarray:
+    """Apply NaN-safe moving average using normalized convolution."""
+    from scipy.ndimage import uniform_filter
+
+    valid = np.isfinite(arr)
+    filled = np.where(valid, arr, 0.0)
+    num = uniform_filter(filled, size=size, mode="nearest")
+    den = uniform_filter(valid.astype(np.float64), size=size, mode="nearest")
+    out = np.full(arr.shape, np.nan, dtype=np.float64)
+    good = valid & (den > 1e-9)
+    out[good] = num[good] / den[good]
+    return out
+
+
+def apply_speckle_filter(
+    arr: np.ndarray,
+    method: str = "none",
+    size: int = 5,
+    is_db: bool = True,
+) -> np.ndarray:
+    """Apply SAR speckle filtering ('none', 'boxcar', or adaptive 'lee').
+
+    When ``is_db=True``, filtering operates in linear power (10**(dB/10)) so
+    multiplicative speckle statistics hold, then transforms back to dB.
+    """
+    data = np.asarray(arr, dtype=np.float64)
+    m = (method or "none").lower().strip()
+    ksize = max(3, int(size) | 1)
+    if m == "none":
+        return data.copy()
+
+    valid = np.isfinite(data)
+    if not np.any(valid):
+        return data.copy()
+
+    work = np.where(valid, np.power(10.0, np.clip(data, -60.0, 40.0) / 10.0), np.nan) if is_db else data
+
+    if m == "boxcar":
+        filtered = _nan_uniform_filter(work, size=ksize)
+    elif m == "lee":
+        mean_local = _nan_uniform_filter(work, size=ksize)
+        sq = np.where(valid, work * work, np.nan)
+        mean_sq = _nan_uniform_filter(sq, size=ksize)
+        var_local = np.maximum(mean_sq - mean_local * mean_local, 0.0)
+        rel_var = var_local / np.maximum(mean_local * mean_local, 1e-12)
+        finite_rel = rel_var[np.isfinite(rel_var) & (mean_local > 0)]
+        sigma_v2 = float(np.median(finite_rel)) if finite_rel.size > 0 else 0.0
+        sigma_v2 = max(0.0, min(sigma_v2, 2.0))
+        var_n = sigma_v2 * (mean_local * mean_local)
+        denom = np.maximum(var_local * (1.0 + sigma_v2), 1e-12)
+        weight = np.clip((var_local - var_n) / denom, 0.0, 1.0)
+        filtered = mean_local + weight * (work - mean_local)
+        filtered = np.where(valid, filtered, np.nan)
+    else:
+        raise ValueError(f"Unsupported speckle filter '{method}'. Use none, boxcar, or lee.")
+
+    if is_db:
+        out = np.full(data.shape, np.nan, dtype=np.float64)
+        pos = np.isfinite(filtered) & (filtered > 0)
+        out[pos] = 10.0 * np.log10(np.maximum(filtered[pos], 1e-12))
+        return out
+    return filtered
+
+
+def compute_otsu_threshold(
+    diff_db: np.ndarray,
+    direction: str = "negative",
+    bins: int = 256,
+) -> float:
+    """Compute an adaptive Otsu threshold on finite backscatter differences."""
+    finite = np.asarray(diff_db, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size < 16:
+        return -2.0 if direction == "negative" else 2.0
+
+    work = np.abs(finite) if direction == "magnitude" else finite
+    lo, hi = float(np.min(work)), float(np.max(work))
+    if hi - lo < 1e-6:
+        return float(lo)
+
+    hist, bin_edges = np.histogram(work, bins=bins, range=(lo, hi))
+    hist = hist.astype(np.float64)
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    weight1 = np.cumsum(hist)
+    weight2 = np.cumsum(hist[::-1])[::-1]
+    valid_split = (weight1[:-1] > 0) & (weight2[1:] > 0)
+    if not np.any(valid_split):
+        return float(0.5 * (lo + hi))
+
+    mean1 = np.cumsum(hist * centers) / np.maximum(weight1, 1e-12)
+    mean2 = (np.cumsum((hist * centers)[::-1]) / np.maximum(weight2[::-1], 1e-12))[::-1]
+    between_var = weight1[:-1] * weight2[1:] * np.square(mean1[:-1] - mean2[1:])
+    between_var = np.where(valid_split, between_var, -1.0)
+    idx = int(np.argmax(between_var))
+    return round(float(centers[idx]), 3)
+
+
+def compute_polygon_confidence(
+    mean_diff_db: float,
+    threshold_db: float,
+    pixel_count: int,
+    same_orbit: Optional[bool] = None,
+    temporal_days: Optional[float] = None,
+    valid_fraction: float = 1.0,
+) -> Tuple[float, str]:
+    """Compute a transparent 0-1 confidence score and level for a polygon/job."""
+    import math
+
+    margin = min(1.0, max(0.0, (abs(float(mean_diff_db) - float(threshold_db)) + 1.0) / 5.0))
+    area_score = min(1.0, math.log10(max(int(pixel_count), 1) + 1) / math.log10(101.0))
+    orbit_weight = 1.0 if same_orbit is True else (0.35 if same_orbit is False else 0.65)
+    t_decay = 1.0 if temporal_days is None else max(0.3, 1.0 - max(0.0, float(temporal_days) - 12.0) / 120.0)
+    vf = min(1.0, max(0.0, float(valid_fraction)))
+    score = round(0.40 * margin + 0.25 * area_score + 0.20 * orbit_weight + 0.15 * vf * t_decay, 3)
+    level = "High" if score >= 0.70 else ("Medium" if score >= 0.45 else "Low")
+    return score, level
+
+
+def compute_severity_area_confidence(
+    area_km2: Optional[float],
+    confidence_score: float,
+) -> Tuple[str, str]:
+    """Classify severity using area (km^2) combined with confidence score."""
+    area = float(area_km2 or 0.0)
+    conf = float(confidence_score or 0.0)
+    if (area >= 2.0 and conf >= 0.65) or (area >= 10.0 and conf >= 0.45):
+        return "High", SEVERITY_RULE
+    if area >= 0.25 and conf >= 0.45:
+        return "Medium", SEVERITY_RULE
+    return "Low", SEVERITY_RULE
+
+
 def export_geotiff(
-    dataset: xr.Dataset,
+    dataset: Any,
     transform=None,
     crs: str = "EPSG:4326",
     filename: str = "result.tif",
+    compress: str = "LZW",
 ) -> Dict[str, Any]:
     """
-    Export a results dataset as a GeoTIFF file.
+    Export a results dataset or 2D NumPy array as a LZW-compressed GeoTIFF file.
 
     Preserves georeferencing and metadata.
 
     Args:
-        dataset: xarray Dataset with the result data
+        dataset: xarray Dataset or 2D numpy ndarray with the result data
         transform: Affine transform for georeferencing (optional, identity if None)
         crs: Coordinate reference system (default EPSG:4326)
         filename: Output filename
+        compress: GeoTIFF compression codec (default LZW)
 
     Returns:
         Export result metadata
@@ -342,13 +491,16 @@ def export_geotiff(
         if transform is None:
             transform = Affine(1, 0, 0, 0, 1, 0)
 
-        # Get the first data variable
-        data_vars = list(dataset.data_vars)
-        if not data_vars:
-            raise ValueError("No data variables found in dataset")
+        if isinstance(dataset, np.ndarray):
+            data = dataset
+        else:
+            # Get the first data variable
+            data_vars = list(dataset.data_vars)
+            if not data_vars:
+                raise ValueError("No data variables found in dataset")
 
-        var_name = data_vars[0]
-        data = dataset[var_name].values
+            var_name = data_vars[0]
+            data = dataset[var_name].values
 
         # Handle masked arrays
         if hasattr(data, "mask"):
@@ -363,6 +515,7 @@ def export_geotiff(
             raise ValueError(f"Expected 2D data, got {data.ndim}D")
 
         rows, cols = data.shape
+        out_arr = np.where(np.isfinite(data), data, -9999).astype(rasterio.float32)
 
         with rasterio.open(
             filename,
@@ -371,12 +524,13 @@ def export_geotiff(
             height=rows,
             width=cols,
             count=1,
-            dtype=str(data.dtype),
+            dtype="float32",
             crs=crs,
             transform=transform,
             nodata=-9999,
+            compress=compress,
         ) as dst:
-            dst.write(data.astype(rasterio.float32), 1)
+            dst.write(out_arr, 1)
 
         result = {
             "success": True,
@@ -434,12 +588,17 @@ def export_geojson(
     spacing_m: Optional[list] = None,
     min_pixels: int = 4,
     simplify_tolerance: float = 0.0001,
+    mode: str = "decrease",
+    same_orbit: Optional[bool] = None,
+    temporal_days: Optional[float] = None,
+    valid_fraction: float = 1.0,
 ) -> Dict[str, Any]:
     """Export flood/change detection results as georeferenced EPSG:4326 GeoJSON polygons.
 
     Filters out connected components smaller than ``min_pixels``, polygonizes the
     mask in the granule's projected CRS via ``rasterio.features.shapes``,
-    reprojects polygons to WGS84 (EPSG:4326), and simplifies geometries.
+    reprojects polygons to WGS84 (EPSG:4326), simplifies geometries, and
+    attaches a per-polygon confidence score/level.
     """
     try:
         from affine import Affine
@@ -457,7 +616,17 @@ def export_geojson(
             }
 
         valid_mask = ~np.isnan(difference_mask)
-        flood_mask = np.where(valid_mask, difference_mask < threshold, False)
+        mode_l = (mode or "decrease").lower()
+        if mode_l == "magnitude":
+            flood_mask = np.where(valid_mask, np.abs(difference_mask) > abs(float(threshold)), False)
+        elif mode_l == "both":
+            flood_mask = np.where(
+                valid_mask,
+                (difference_mask < float(threshold)) | (np.abs(difference_mask) > abs(float(threshold))),
+                False,
+            )
+        else:
+            flood_mask = np.where(valid_mask, difference_mask < float(threshold), False)
 
         if not np.any(flood_mask):
             return {
@@ -528,6 +697,17 @@ def export_geojson(
                 if not simplified.is_empty:
                     geom = simplified
 
+            eval_val = -abs(mean_diff) if mode_l == "magnitude" else mean_diff
+            eval_thr = -abs(float(threshold)) if mode_l == "magnitude" else float(threshold)
+            conf_score, conf_level = compute_polygon_confidence(
+                mean_diff_db=eval_val,
+                threshold_db=eval_thr,
+                pixel_count=px_count,
+                same_orbit=same_orbit,
+                temporal_days=temporal_days,
+                valid_fraction=valid_fraction,
+            )
+
             features.append({
                 "type": "Feature",
                 "properties": {
@@ -536,6 +716,8 @@ def export_geojson(
                     "area_km2": area_km2,
                     "mean_difference_db": mean_diff,
                     "min_difference_db": min_diff,
+                    "confidence_score": conf_score,
+                    "confidence_level": conf_level,
                     "flood_indicator": True,
                 },
                 "geometry": mapping(geom),
@@ -551,6 +733,7 @@ def export_geojson(
                 "source_crs": crs_norm,
                 "min_pixels": min_pixels,
                 "total_pixels_checked": int(valid_mask.sum()),
+                "confidence_formula": CONFIDENCE_FORMULA,
             },
         }
         logger.info("Exported georeferenced GeoJSON with %d polygon features", len(features))

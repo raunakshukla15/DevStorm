@@ -8,6 +8,7 @@ depending on the execution environment.
 Follows the provider abstraction pattern defined in the project spec.
 """
 
+import math
 import os
 import logging
 from contextlib import contextmanager
@@ -532,14 +533,15 @@ class NISARDataProvider:
         window: int = 256,
         lat: Optional[float] = None,
         lon: Optional[float] = None,
+        bbox: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
-        """Stream a location-centered window of a co-pol backscatter layer.
+        """Stream a location-centered or AOI-bbox backscatter window.
 
-        Reads ONLY a ``window`` x ``window`` patch via HTTPS range requests —
-        the full (often multi-GB) product is never downloaded. When ``lat`` and
-        ``lon`` are provided, transforms them into the granule's projected CRS
-        using ``xCoordinates``, ``yCoordinates`` and ``projection`` EPSG, checks
-        footprint bounds, and slices around the nearest grid cell.
+        Reads ONLY the requested spatial patch via HTTPS range requests —
+        the full (often multi-GB) product is never downloaded. When ``bbox`` is
+        provided (``[west, south, east, north]`` EPSG:4326), crops to the AOI
+        and integer-downsamples by ``stride`` when larger than
+        ``MAX_WINDOW_PIXELS``. Supports ``band='HH/HV'`` linear ratio.
         """
         if not https_url:
             raise RuntimeError("No HTTPS access URL for this granule.")
@@ -549,13 +551,27 @@ class NISARDataProvider:
                 f"window must be between 1 and {MAX_WINDOW_PIXELS} pixels (got {req_window})."
             )
 
+        band_up = (band or "HH").upper().strip()
+        is_ratio = band_up in {"HH/HV", "HH_HV", "RVI_HH_HV"}
+
         try:
             with self._open_gcov_grid(https_url) as ds:
-                chosen = self._select_pol_variable(ds, band)
-                da = ds[chosen]
+                if is_ratio:
+                    hh_var = self._select_pol_variable(ds, "HH")
+                    hv_var = self._select_pol_variable(ds, "HV")
+                    if "HV" not in hv_var.upper():
+                        raise ValueError(
+                            f"Cross-polarization HV layer is not available in this granule "
+                            f"(variables: {sorted(map(str, ds.data_vars))[:12]}). Try HH or VV."
+                        )
+                    chosen = f"{hh_var}/{hv_var}"
+                    da = ds[hh_var]
+                else:
+                    chosen = self._select_pol_variable(ds, band_up)
+                    da = ds[chosen]
+
                 shape = tuple(int(s) for s in da.shape)
                 rows, cols = shape[-2], shape[-1]
-                w = min(req_window, rows, cols)
 
                 if "xCoordinates" not in ds or "yCoordinates" not in ds:
                     raise RuntimeError(
@@ -589,58 +605,266 @@ class NISARDataProvider:
 
                 half_dx = (spacing_m[0] / 2.0) if spacing_m else 10.0
                 half_dy = (spacing_m[1] / 2.0) if spacing_m else 10.0
+                gx_min = float(np.min(x_coords)) - half_dx
+                gx_max = float(np.max(x_coords)) + half_dx
+                gy_min = float(np.min(y_coords)) - half_dy
+                gy_max = float(np.max(y_coords)) + half_dy
 
-                if lat is not None and lon is not None:
+                stride = 1
+                if bbox is not None and len(bbox) == 4:
                     from pyproj import Transformer
 
+                    west, south, east, north = (float(v) for v in bbox)
                     transformer = Transformer.from_crs("EPSG:4326", crs_str, always_xy=True)
-                    target_x, target_y = transformer.transform(float(lon), float(lat))
-                    x_min = float(np.min(x_coords)) - half_dx
-                    x_max = float(np.max(x_coords)) + half_dx
-                    y_min = float(np.min(y_coords)) - half_dy
-                    y_max = float(np.max(y_coords)) + half_dy
-                    if not (x_min <= target_x <= x_max and y_min <= target_y <= y_max):
+                    sample_lons = [west, east, west, east, 0.5 * (west + east), 0.5 * (west + east), west, east]
+                    sample_lats = [south, south, north, north, south, north, 0.5 * (south + north), 0.5 * (south + north)]
+                    txs, tys = transformer.transform(sample_lons, sample_lats)
+                    bx_min, bx_max = float(min(txs)), float(max(txs))
+                    by_min, by_max = float(min(tys)), float(max(tys))
+                    if bx_max < gx_min or bx_min > gx_max or by_max < gy_min or by_min > gy_max:
                         raise ValueError(
-                            f"Point ({lat}, {lon}) is outside granule footprint "
-                            f"(projected x={target_x:.1f} m, y={target_y:.1f} m vs "
-                            f"x=[{x_min:.1f}, {x_max:.1f}], y=[{y_min:.1f}, {y_max:.1f}] in {crs_str})."
+                            f"AOI bbox {bbox} is outside granule footprint in {crs_str}."
                         )
-                    cx = int(np.abs(x_coords - target_x).argmin())
-                    cy = int(np.abs(y_coords - target_y).argmin())
-                    r0 = max(0, min(rows - w, cy - w // 2))
-                    c0 = max(0, min(cols - w, cx - w // 2))
+                    x_idx = np.where((x_coords >= bx_min) & (x_coords <= bx_max))[0]
+                    y_idx = np.where((y_coords >= by_min) & (y_coords <= by_max))[0]
+                    if x_idx.size > 0 and y_idx.size > 0:
+                        c0, c1 = int(x_idx.min()), int(x_idx.max()) + 1
+                        r0, r1 = int(y_idx.min()), int(y_idx.max()) + 1
+                    else:
+                        cx = int(np.abs(x_coords - 0.5 * (bx_min + bx_max)).argmin())
+                        cy = int(np.abs(y_coords - 0.5 * (by_min + by_max)).argmin())
+                        pad = min(32, rows // 2, cols // 2)
+                        c0 = max(0, cx - pad)
+                        c1 = min(cols, cx + pad + 1)
+                        r0 = max(0, cy - pad)
+                        r1 = min(rows, cy + pad + 1)
+                    raw_h = max(1, r1 - r0)
+                    raw_w = max(1, c1 - c0)
+                    if max(raw_h, raw_w) > MAX_WINDOW_PIXELS:
+                        stride = int(math.ceil(max(raw_h, raw_w) / MAX_WINDOW_PIXELS))
+                    row_slice = slice(r0, r1, stride)
+                    col_slice = slice(c0, c1, stride)
                 else:
-                    r0 = max(0, (rows - w) // 2)
-                    c0 = max(0, (cols - w) // 2)
+                    w = min(req_window, rows, cols)
+                    if lat is not None and lon is not None:
+                        from pyproj import Transformer
 
-                patch = da.isel({
-                    da.dims[-2]: slice(r0, r0 + w),
-                    da.dims[-1]: slice(c0, c0 + w),
-                })
-                values = np.asarray(patch.values, dtype=np.float64)
-                x_win = x_coords[c0 : c0 + w]
-                y_win = y_coords[r0 : r0 + w]
+                        transformer = Transformer.from_crs("EPSG:4326", crs_str, always_xy=True)
+                        target_x, target_y = transformer.transform(float(lon), float(lat))
+                        if not (gx_min <= target_x <= gx_max and gy_min <= target_y <= gy_max):
+                            raise ValueError(
+                                f"Point ({lat}, {lon}) is outside granule footprint "
+                                f"(projected x={target_x:.1f} m, y={target_y:.1f} m vs "
+                                f"x=[{gx_min:.1f}, {gx_max:.1f}], y=[{gy_min:.1f}, {gy_max:.1f}] in {crs_str})."
+                            )
+                        cx = int(np.abs(x_coords - target_x).argmin())
+                        cy = int(np.abs(y_coords - target_y).argmin())
+                        r0 = max(0, min(rows - w, cy - w // 2))
+                        c0 = max(0, min(cols - w, cx - w // 2))
+                    else:
+                        r0 = max(0, (rows - w) // 2)
+                        c0 = max(0, (cols - w) // 2)
+                    row_slice = slice(r0, r0 + w)
+                    col_slice = slice(c0, c0 + w)
+
+                isel_map = {da.dims[-2]: row_slice, da.dims[-1]: col_slice}
+                if is_ratio:
+                    hh_patch = ds[hh_var].isel(isel_map)
+                    hv_patch = ds[hv_var].isel(isel_map)
+                    hh_vals = np.asarray(hh_patch.values, dtype=np.float64)
+                    hv_vals = np.asarray(hv_patch.values, dtype=np.float64)
+                    valid = np.isfinite(hh_vals) & np.isfinite(hv_vals) & (hv_vals > 0) & (hh_vals > 0)
+                    values = np.full(hh_vals.shape, np.nan, dtype=np.float64)
+                    values[valid] = hh_vals[valid] / np.maximum(hv_vals[valid], 1e-12)
+                else:
+                    patch = da.isel(isel_map)
+                    values = np.asarray(patch.values, dtype=np.float64)
+
+                x_win = x_coords[col_slice]
+                y_win = y_coords[row_slice]
+                out_h, out_w = int(values.shape[-2]), int(values.shape[-1])
+                eff_spacing = (
+                    [spacing_m[0] * stride, spacing_m[1] * stride]
+                    if spacing_m and stride > 1
+                    else spacing_m
+                )
 
                 logger.info(
-                    "Streamed %dx%d window of '%s' at origin=(%d,%d) in %s (full %s) from %s",
-                    w, w, chosen, r0, c0, crs_str, shape, https_url.split("/")[-1],
+                    "Streamed %dx%d window (stride=%d) of '%s' at origin=(%d,%d) in %s (full %s) from %s",
+                    out_h, out_w, stride, chosen, r0, c0, crs_str, shape, https_url.split("/")[-1],
                 )
                 return {
                     "values": values,
                     "variable": str(chosen),
                     "shape": shape,
-                    "window": w,
+                    "window": max(out_h, out_w),
                     "window_origin": [r0, c0],
-                    "spacing_m": spacing_m,
+                    "spacing_m": eff_spacing,
                     "x_coords": x_win,
                     "y_coords": y_win,
                     "epsg": epsg_code,
                     "crs": crs_str,
+                    "downsampled": stride > 1,
+                    "stride": stride,
                 }
         except (RuntimeError, ValueError):
             raise
         except Exception as e:
             raise RuntimeError(f"Windowed streaming failed: {e}")
+
+    def discover_nisar_collections(self, keyword: str = "NISAR", count: int = 50) -> List[Dict[str, Any]]:
+        """Query NASA CMR dynamically for published NISAR datasets."""
+        if not self.is_authenticated() and not self.authenticate():
+            raise RuntimeError("Earthdata authentication required to discover NISAR collections.")
+        try:
+            collections = earthaccess.search_datasets(keyword=keyword, count=count)
+        except Exception as e:
+            raise RuntimeError(f"CMR dataset discovery failed: {e}")
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for col in collections:
+            umm = (col.get("umm") if isinstance(col, dict) else getattr(col, "umm", None)) or {}
+            meta = (col.get("meta") if isinstance(col, dict) else getattr(col, "meta", None)) or {}
+            short_name = umm.get("ShortName")
+            if not short_name or short_name in seen:
+                continue
+            seen.add(short_name)
+            entry_title = umm.get("EntryTitle") or short_name
+            version = str(umm.get("Version") or "")
+            sn_upper = short_name.upper()
+            if "GCOV" in sn_upper:
+                family = "L2 GCOV (Geocoded Polarimetric Covariance)"
+            elif "GUNW" in sn_upper:
+                family = "L2 GUNW (Geocoded Unwrapped Interferogram / InSAR)"
+            elif "GSLC" in sn_upper:
+                family = "L2 GSLC (Geocoded Single Look Complex)"
+            elif "SME2" in sn_upper:
+                family = "L3 SME2 (Soil Moisture)"
+            elif "GOFF" in sn_upper:
+                family = "L2 GOFF (Geocoded Pixel Offsets)"
+            elif "RSLC" in sn_upper or "RUNW" in sn_upper or "RIFG" in sn_upper or "ROFF" in sn_upper:
+                family = "L1 Radar-Coordinate SAR/InSAR"
+            else:
+                family = "NISAR Ancillary / Product"
+            out.append({
+                "short_name": short_name,
+                "version": version,
+                "title": entry_title,
+                "concept_id": meta.get("concept-id"),
+                "family": family,
+                "processing_level": (umm.get("ProcessingLevel") or {}).get("Id"),
+                "abstract": (umm.get("Abstract") or "")[:360],
+            })
+        out.sort(key=lambda c: c["short_name"])
+        return out
+
+    def stream_gunw_window(
+        self,
+        https_url: str,
+        lat: float,
+        lon: float,
+        window: int = 256,
+        bbox: Optional[List[float]] = None,
+    ) -> Dict[str, Any]:
+        """Stream unwrapped phase & coherence from a NISAR L2 GUNW interferogram."""
+        import xarray as xr
+        from pyproj import Transformer
+
+        if not https_url:
+            raise RuntimeError("No HTTPS access URL for GUNW granule.")
+        if not self.is_authenticated() and not self.authenticate():
+            raise RuntimeError("Earthdata authentication required for GUNW streaming.")
+
+        req_window = max(64, min(int(window), MAX_WINDOW_PIXELS))
+        fs = earthaccess.get_fsspec_https_session()
+        fobj = fs.open(https_url, mode="rb")
+        ds = None
+        last_err = None
+        try:
+            for gp in (
+                "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH",
+                "science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH",
+                "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/VV",
+                "science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/VV",
+            ):
+                try:
+                    try:
+                        fobj.seek(0)
+                    except Exception:
+                        pass
+                    ds = xr.open_dataset(
+                        fobj,
+                        group=gp,
+                        engine="h5netcdf",
+                        decode_timedelta=False,
+                        phony_dims="access",
+                    )
+                    if "unwrappedPhase" in ds or "coherenceMagnitude" in ds:
+                        break
+                except Exception as e:
+                    last_err = e
+                    ds = None
+            if ds is None:
+                raise RuntimeError(f"Could not open GUNW interferogram group: {last_err}")
+
+            phase_var = "unwrappedPhase" if "unwrappedPhase" in ds else self._select_pol_variable(ds, "PHASE")
+            da = ds[phase_var]
+            shape = tuple(int(s) for s in da.shape)
+            rows, cols = shape[-2], shape[-1]
+            x_coords = np.asarray(ds["xCoordinates"].values, dtype=np.float64)
+            y_coords = np.asarray(ds["yCoordinates"].values, dtype=np.float64)
+            epsg_code = self._extract_epsg(ds)
+            crs_str = f"EPSG:{epsg_code}"
+            transformer = Transformer.from_crs("EPSG:4326", crs_str, always_xy=True)
+
+            if bbox and len(bbox) == 4:
+                txs, tys = transformer.transform([bbox[0], bbox[2]], [bbox[1], bbox[3]])
+                x_idx = np.where((x_coords >= min(txs)) & (x_coords <= max(txs)))[0]
+                y_idx = np.where((y_coords >= min(tys)) & (y_coords <= max(tys)))[0]
+                c0, c1 = (int(x_idx.min()), int(x_idx.max()) + 1) if x_idx.size else (0, min(cols, req_window))
+                r0, r1 = (int(y_idx.min()), int(y_idx.max()) + 1) if y_idx.size else (0, min(rows, req_window))
+            else:
+                tx, ty = transformer.transform(float(lon), float(lat))
+                cx = int(np.abs(x_coords - tx).argmin())
+                cy = int(np.abs(y_coords - ty).argmin())
+                w = min(req_window, rows, cols)
+                r0 = max(0, min(rows - w, cy - w // 2))
+                c0 = max(0, min(cols - w, cx - w // 2))
+                r1, c1 = r0 + w, c0 + w
+
+            stride = max(1, int(math.ceil(max(r1 - r0, c1 - c0) / MAX_WINDOW_PIXELS)))
+            sl = {da.dims[-2]: slice(r0, r1, stride), da.dims[-1]: slice(c0, c1, stride)}
+            phase_rad = np.asarray(da.isel(sl).values, dtype=np.float64)
+            coh = (
+                np.asarray(ds["coherenceMagnitude"].isel(sl).values, dtype=np.float64)
+                if "coherenceMagnitude" in ds
+                else None
+            )
+            # L-band NISAR wavelength ~ 0.2384 m -> LOS disp (cm) = phase_rad * (-lambda / 4pi) * 100
+            los_cm = phase_rad * (-23.84 / (4.0 * math.pi))
+            dx = abs(float(x_coords[1] - x_coords[0])) * stride if len(x_coords) > 1 else 80.0
+            dy = abs(float(y_coords[1] - y_coords[0])) * stride if len(y_coords) > 1 else 80.0
+            return {
+                "los_displacement_cm": los_cm,
+                "unwrapped_phase_rad": phase_rad,
+                "coherence": coh,
+                "x_coords": x_coords[slice(c0, c1, stride)],
+                "y_coords": y_coords[slice(r0, r1, stride)],
+                "epsg": epsg_code,
+                "crs": crs_str,
+                "spacing_m": [dx, dy],
+                "window_origin": [r0, c0],
+                "shape": shape,
+                "variable": phase_var,
+                "stride": stride,
+            }
+        finally:
+            try:
+                if ds is not None:
+                    ds.close()
+                fobj.close()
+            except Exception:
+                pass
 
     def get_product_info(self, short_name: str) -> Dict[str, Any]:
         """Get information about a NISAR product type."""

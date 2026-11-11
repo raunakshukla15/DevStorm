@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 # Load backend/.env automatically so NASA_EARTHDATA_* credentials are
 # available via os.getenv without manual `set` commands.
@@ -13,23 +15,32 @@ try:
 except ImportError:
     pass
 
-from app.db import init_db
+from app.db import init_db, prune_expired_jobs
+from app.limiter import limiter
 from app.routers import api_router
 from app.schemas import RootResponse
+from app.services.alerts_worker import start_watchlist_scheduler, stop_watchlist_scheduler
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    yield
+    prune_expired_jobs(ttl_days=int(os.getenv("JOB_TTL_DAYS", "30")))
+    start_watchlist_scheduler()
+    try:
+        yield
+    finally:
+        stop_watchlist_scheduler()
 
 
 app = FastAPI(
     title="TerraPulse API",
     description="Earth Surface Intelligence - NISAR satellite data analysis platform",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173")
 cors_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
