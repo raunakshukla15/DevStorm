@@ -75,7 +75,10 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5">
-      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-[#0b1b33] via-[#0a1226] to-[#060b16] p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6">
+      <div
+        style={{ backgroundImage: 'linear-gradient(135deg, #0b1b33 0%, #0a1226 55%, #060b16 100%)' }}
+        className="tp-card relative overflow-hidden rounded-2xl border border-white/10 bg-[#0b172c] p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6"
+      >
         <div className="space-y-3 max-w-xl">
           <h1 className="text-3xl font-bold">Earth Surface Change Monitoring</h1>
           <p className="text-white/65">

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
+  ChevronDown,
   ChevronRight,
   Database,
   Moon,
@@ -107,7 +108,7 @@ export function ProfileMenu() {
   )
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative z-[1200]">
       <button
         type="button"
         onClick={() => setOpenPath((prev) => (prev === location.pathname ? null : location.pathname))}
@@ -115,18 +116,25 @@ export function ProfileMenu() {
         aria-expanded={open}
         aria-label={`Operator profile menu (${displayName})`}
         title={`${displayName} — Open profile & avatar options`}
-        className={`rounded-full p-0.5 transition-all cursor-pointer focus-visible:outline-2 focus-visible:outline-cyan-400 ${
-          open ? 'ring-2 ring-cyan-400' : 'hover:ring-2 hover:ring-cyan-400/60'
+        className={`inline-flex items-center gap-1.5 rounded-full p-0.5 pr-2 border transition-all cursor-pointer focus-visible:outline-2 focus-visible:outline-cyan-400 ${
+          open
+            ? 'border-cyan-400 bg-white/15'
+            : 'border-white/15 bg-white/5 hover:bg-white/10 hover:border-cyan-400/60'
         }`}
       >
         <UserAvatar profile={profile} size="sm" />
+        <ChevronDown
+          size={13}
+          aria-hidden="true"
+          className={`text-white/70 transition-transform ${open ? 'rotate-180 text-cyan-300' : ''}`}
+        />
       </button>
 
       {open && (
         <div
           role="dialog"
           aria-label="Operator profile menu"
-          className="absolute right-0 mt-2 w-80 sm:w-[22rem] rounded-xl bg-[#0c1424] border border-white/15 shadow-2xl z-50 overflow-hidden"
+          className="absolute right-0 mt-2 w-80 sm:w-[22rem] rounded-xl bg-[#0c1424] border border-white/15 shadow-2xl z-[1200] overflow-hidden"
         >
           <div className="p-4 border-b border-white/10 space-y-3">
             <div className="flex items-start gap-3">
@@ -270,16 +278,20 @@ export function ProfileMenu() {
                 {AVATAR_TONE_LIST.map((tone) => {
                   const selected = profile.avatarTone === tone.id
                   return (
-                    <button
-                      key={tone.id}
-                      type="button"
-                      onClick={() => setProfile({ avatarTone: tone.id })}
-                      title={tone.label}
-                      aria-label={`Select ${tone.label} badge tone`}
-                      className={`w-4 h-4 rounded-full ${tone.swatchClass} transition-transform cursor-pointer ${
-                        selected ? 'ring-2 ring-white scale-110' : 'opacity-75 hover:opacity-100'
-                      }`}
-                    />
+                      <button
+                        key={tone.id}
+                        type="button"
+                        onClick={() => setProfile({ avatarTone: tone.id })}
+                        title={tone.label}
+                        aria-label={`Select ${tone.label} badge tone`}
+                        style={{
+                          backgroundColor: tone.backgroundColor,
+                          backgroundImage: tone.gradientCss,
+                        }}
+                        className={`w-4 h-4 rounded-full ${tone.swatchClass} border border-white/30 transition-transform cursor-pointer ${
+                          selected ? 'ring-2 ring-white scale-110' : 'opacity-80 hover:opacity-100'
+                        }`}
+                      />
                   )
                 })}
               </div>

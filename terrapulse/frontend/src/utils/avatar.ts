@@ -34,6 +34,8 @@ export interface AvatarToneMeta {
   label: string
   bgClass: string
   swatchClass: string
+  backgroundColor: string
+  gradientCss: string
 }
 
 export const AVATAR_TONES: Record<AvatarToneId, AvatarToneMeta> = {
@@ -42,36 +44,48 @@ export const AVATAR_TONES: Record<AvatarToneId, AvatarToneMeta> = {
     label: 'Ocean Blue',
     bgClass: 'bg-gradient-to-br from-sky-500 to-blue-700',
     swatchClass: 'bg-gradient-to-br from-sky-500 to-blue-700',
+    backgroundColor: '#0284c7',
+    gradientCss: 'linear-gradient(135deg, #0ea5e9 0%, #1d4ed8 100%)',
   },
   cyan: {
     id: 'cyan',
     label: 'Orbital Cyan',
     bgClass: 'bg-gradient-to-br from-cyan-500 to-teal-700',
     swatchClass: 'bg-gradient-to-br from-cyan-500 to-teal-700',
+    backgroundColor: '#0891b2',
+    gradientCss: 'linear-gradient(135deg, #06b6d4 0%, #0f766e 100%)',
   },
   emerald: {
     id: 'emerald',
     label: 'Geo Emerald',
     bgClass: 'bg-gradient-to-br from-emerald-500 to-teal-700',
     swatchClass: 'bg-gradient-to-br from-emerald-500 to-teal-700',
+    backgroundColor: '#059669',
+    gradientCss: 'linear-gradient(135deg, #10b981 0%, #0f766e 100%)',
   },
   amber: {
     id: 'amber',
     label: 'SAR Amber',
     bgClass: 'bg-gradient-to-br from-amber-500 to-orange-700',
     swatchClass: 'bg-gradient-to-br from-amber-500 to-orange-700',
+    backgroundColor: '#d97706',
+    gradientCss: 'linear-gradient(135deg, #f59e0b 0%, #c2410c 100%)',
   },
   violet: {
     id: 'violet',
     label: 'Radar Violet',
     bgClass: 'bg-gradient-to-br from-violet-500 to-indigo-700',
     swatchClass: 'bg-gradient-to-br from-violet-500 to-indigo-700',
+    backgroundColor: '#7c3aed',
+    gradientCss: 'linear-gradient(135deg, #8b5cf6 0%, #4338ca 100%)',
   },
   slate: {
     id: 'slate',
     label: 'Slate Steel',
     bgClass: 'bg-gradient-to-br from-slate-600 to-slate-800',
     swatchClass: 'bg-gradient-to-br from-slate-600 to-slate-800',
+    backgroundColor: '#334155',
+    gradientCss: 'linear-gradient(135deg, #475569 0%, #1e293b 100%)',
   },
 }
 

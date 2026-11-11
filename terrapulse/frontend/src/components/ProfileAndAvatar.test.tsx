@@ -115,6 +115,10 @@ describe('ProfileMenu header interaction', () => {
     const trigger = screen.getByRole('button', { name: /Operator profile menu/i })
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
     expect(trigger).toHaveTextContent('R')
+    const initialBadge = trigger.querySelector('.tp-avatar') as HTMLElement | null
+    expect(initialBadge).not.toBeNull()
+    expect(initialBadge?.className).toContain('border-white/30')
+    expect(initialBadge?.style.backgroundColor).toBe('rgb(2, 132, 199)')
 
     fireEvent.click(trigger)
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
@@ -126,6 +130,8 @@ describe('ProfileMenu header interaction', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Select Geo Emerald badge tone/i }))
     expect(usePrefsStore.getState().profile.avatarTone).toBe('emerald')
+    const updatedBadge = trigger.querySelector('.tp-avatar') as HTMLElement | null
+    expect(updatedBadge?.style.backgroundColor).toBe('rgb(5, 150, 105)')
 
     fireEvent.click(screen.getByRole('button', { name: /Switch to Light High-Contrast Theme/i }))
     expect(usePrefsStore.getState().prefs.theme).toBe('light')

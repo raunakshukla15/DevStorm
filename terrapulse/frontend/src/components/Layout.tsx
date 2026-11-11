@@ -113,7 +113,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <p className="mt-auto text-[11px] text-white/35 px-3 pt-3">Live NISAR data · no mock data</p>
         </aside>
         <div className="flex-1 min-w-0 flex flex-col">
-          <header className="flex items-center gap-3 px-4 md:px-6 py-3 border-b border-white/10">
+          <header className="relative z-[1100] flex items-center gap-3 px-4 md:px-6 py-3 border-b border-white/10">
             <button
               type="button"
               onClick={() => setMenuOpen(true)}

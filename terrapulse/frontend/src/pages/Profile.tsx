@@ -213,7 +213,10 @@ export default function Profile() {
         </div>
       </div>
 
-      <section className="tp-card rounded-2xl border border-white/10 bg-gradient-to-br from-[#0b1b33] via-[#0a1226] to-[#060b16] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <section
+        style={{ backgroundImage: 'linear-gradient(135deg, #0b1b33 0%, #0a1226 55%, #060b16 100%)' }}
+        className="tp-card rounded-2xl border border-white/10 bg-[#0b172c] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6"
+      >
         <div className="flex items-start sm:items-center gap-4">
           <div className="relative shrink-0">
             <UserAvatar profile={previewProfile} size="xl" />
@@ -485,7 +488,13 @@ export default function Profile() {
                           : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25'
                       }`}
                     >
-                      <span className={`w-4 h-4 rounded-full ${tone.swatchClass} ring-1 ring-white/30`} />
+                      <span
+                        style={{
+                          backgroundColor: tone.backgroundColor,
+                          backgroundImage: tone.gradientCss,
+                        }}
+                        className={`w-4 h-4 rounded-full ${tone.swatchClass} border border-white/30`}
+                      />
                       <span>{tone.label}</span>
                     </button>
                   )

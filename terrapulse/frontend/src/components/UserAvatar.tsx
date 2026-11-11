@@ -26,7 +26,7 @@ export function UserAvatar({
   if (profile.avatarKind === 'photo' && profile.avatarPhotoDataUrl) {
     return (
       <span
-        className={`${dims.box} rounded-full overflow-hidden inline-flex items-center justify-center shrink-0 ring-1 ring-white/25 bg-[#0c1424] ${className}`}
+        className={`${dims.box} rounded-full overflow-hidden inline-flex items-center justify-center shrink-0 border border-white/30 bg-[#0c1424] ${className}`}
       >
         <img
           src={profile.avatarPhotoDataUrl}
@@ -37,12 +37,19 @@ export function UserAvatar({
     )
   }
 
+  const badgeStyle = {
+    backgroundColor: tone.backgroundColor,
+    backgroundImage: tone.gradientCss,
+    color: '#ffffff',
+  }
+
   if (profile.avatarKind === 'preset') {
     const preset = getAvatarPresetMeta(profile.avatarPreset)
     const Icon = preset.icon
     return (
       <span
-        className={`${dims.box} ${tone.bgClass} tp-avatar rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white ring-1 ring-white/25 shadow-sm select-none ${className}`}
+        style={badgeStyle}
+        className={`${dims.box} ${tone.bgClass} tp-avatar rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white border border-white/30 shadow-sm select-none ${className}`}
       >
         <Icon size={dims.icon} strokeWidth={2.1} aria-hidden="true" />
       </span>
@@ -52,7 +59,8 @@ export function UserAvatar({
   const initials = computeInitials(profile.displayName, profile.avatarCustomInitials)
   return (
     <span
-      className={`${dims.box} ${tone.bgClass} tp-avatar ${dims.text} rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white ring-1 ring-white/25 shadow-sm select-none ${className}`}
+      style={badgeStyle}
+      className={`${dims.box} ${tone.bgClass} tp-avatar ${dims.text} rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white border border-white/30 shadow-sm select-none ${className}`}
     >
       {initials}
     </span>
