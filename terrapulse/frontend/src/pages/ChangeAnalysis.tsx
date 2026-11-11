@@ -1,18 +1,21 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Search, Sparkles } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { fetchPointInsights, fetchSampleResult, startHazardJob } from '../api/analysis'
+import { fetchPointInsights, startHazardJob } from '../api/analysis'
 import { geocodePlace } from '../api/geocode'
 import { AnalysisResult } from '../components/AnalysisResult'
 import { Card } from '../components/Card'
 import { HazardPicker } from '../components/HazardPicker'
 import { SevBadge } from '../components/SevBadge'
+import { Skeleton } from '../components/Skeleton'
 import { useJobPolling } from '../hooks/useJobPolling'
 import { usePrefsStore } from '../store/usePrefsStore'
 import { formatArea, formatPower } from '../utils/format'
 import { HAZARDS } from '../utils/geo'
+
+const DEFAULT_BEFORE_DATE = '2026-08-10'
 
 function parseBboxParam(raw: string | null): number[] | null {
   if (!raw) return null
@@ -26,21 +29,25 @@ export default function ChangeAnalysis() {
   const prefs = usePrefsStore((s) => s.prefs)
   const storedLastResult = usePrefsStore((s) => s.lastResult)
   const setLastResult = usePrefsStore((s) => s.setLastResult)
+  const activeJobId = usePrefsStore((s) => s.activeJobId)
+  const activeJobStartedAt = usePrefsStore((s) => s.activeJobStartedAt)
+  const setActiveJob = usePrefsStore((s) => s.setActiveJob)
 
   const [form, setForm] = useState(() => ({
     place: '',
-    before: params.get('before') ?? '2026-09-01',
-    after: params.get('after') ?? '2026-09-13',
-    lat: params.get('lat') ?? '-1.5',
-    lon: params.get('lon') ?? '-52.0',
+    before: params.get('before') ?? DEFAULT_BEFORE_DATE,
+    after: params.get('after') ?? '',
+    lat: params.get('lat') ?? '26.2',
+    lon: params.get('lon') ?? '92.9',
   }))
   const [hazard, setHazard] = useState(() => {
     const hz = params.get('hazard')
     return hz && HAZARDS.some((h) => h.id === hz) ? hz : (prefs.defaultHazard ?? 'flood')
   })
-  const [auto, setAuto] = useState(() => {
-    if (params.get('before') && params.get('after')) return false
-    return params.get('auto') === '1' ? true : prefs.autoDates !== false
+  const [auto, setAuto] = useState(() => params.get('auto') === '1')
+  const [afterLatest, setAfterLatest] = useState(() => {
+    if (params.get('auto') === '1') return false
+    return !params.get('after')
   })
   const [band, setBand] = useState(() => HAZARDS.find((h) => h.id === hazard)?.defaultBand ?? 'HH')
   const [speckleFilter, setSpeckleFilter] = useState('lee')
@@ -50,9 +57,7 @@ export default function ChangeAnalysis() {
   const [slopeMask, setSlopeMask] = useState(false)
   const [bbox, setBbox] = useState<number[] | null>(() => parseBboxParam(params.get('bbox')))
 
-  const [activeJobId, setActiveJobId] = useState<string | null>(null)
-  const [startedAt, setStartedAt] = useState<number | null>(null)
-  const [elapsed, setElapsed] = useState(0)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [validationError, setValidationError] = useState<string | null>(null)
   const [detail, setDetail] = useState(true)
 
@@ -67,23 +72,23 @@ export default function ChangeAnalysis() {
     const pAfter = p.get('after')
     const pHz = p.get('hazard')
     const pAuto = p.get('auto')
-    if (pLat && pLon) {
-      setForm((prev) => ({
-        ...prev,
-        lat: pLat,
-        lon: pLon,
-        before: pBefore ?? prev.before,
-        after: pAfter ?? prev.after,
-      }))
-    } else if (pBefore || pAfter) {
-      setForm((prev) => ({
-        ...prev,
-        before: pBefore ?? prev.before,
-        after: pAfter ?? prev.after,
-      }))
+    setForm((prev) => ({
+      ...prev,
+      lat: pLat ?? prev.lat,
+      lon: pLon ?? prev.lon,
+      before: pBefore ?? prev.before,
+      after: pAfter ?? (pAuto === '1' ? prev.after : ''),
+    }))
+    if (pAuto === '1') {
+      setAuto(true)
+      setAfterLatest(false)
+    } else if (pBefore && pAfter) {
+      setAuto(false)
+      setAfterLatest(false)
+    } else if (pBefore && !pAfter) {
+      setAuto(false)
+      setAfterLatest(true)
     }
-    if (pBefore && pAfter) setAuto(false)
-    else if (pAuto === '1') setAuto(true)
     if (pHz && HAZARDS.some((h) => h.id === pHz)) setHazard(pHz)
     setBbox(parseBboxParam(p.get('bbox')))
   }
@@ -115,12 +120,17 @@ export default function ChangeAnalysis() {
     !jobQuery.isError
 
   useEffect(() => {
-    if (!running || startedAt === null) return
+    if (!running || activeJobStartedAt === null) return
     const timer = window.setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startedAt) / 1000))
+      setNowMs(Date.now())
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [running, startedAt])
+  }, [running, activeJobStartedAt])
+
+  const elapsed =
+    running && activeJobStartedAt !== null
+      ? Math.max(0, Math.floor((nowMs - activeJobStartedAt) / 1000))
+      : 0
 
   useEffect(() => {
     if ((jobQuery.data?.status === 'complete' || jobQuery.data?.status === 'completed') && jobQuery.data.result) {
@@ -131,25 +141,13 @@ export default function ChangeAnalysis() {
   const startMutation = useMutation({
     mutationFn: startHazardJob,
     onSuccess: (res) => {
-      setActiveJobId(res.job_id)
-      setStartedAt(Date.now())
-      setElapsed(0)
+      const ts = Date.now()
+      setNowMs(ts)
+      setActiveJob(res.job_id, ts)
       toast.info(`Started ${res.hazard ?? hazard} job ${res.job_id}`)
     },
     onError: (err: Error) => toast.error(err.message),
   })
-
-  const loadSample = async () => {
-    try {
-      const sample = await fetchSampleResult()
-      setActiveJobId(null)
-      setLastResult(sample)
-      setDetail(true)
-      toast.success('Loaded guided NISAR sample demonstration')
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not load sample')
-    }
-  }
 
   const onSelectHazard = (nextHz: string) => {
     setHazard(nextHz)
@@ -185,27 +183,33 @@ export default function ChangeAnalysis() {
       return
     }
     if (!auto) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(form.before) || !/^\d{4}-\d{2}-\d{2}$/.test(form.after)) {
-        setValidationError('Dates must be YYYY-MM-DD (or tick auto dates).')
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(form.before)) {
+        setValidationError('Before date must be YYYY-MM-DD (or tick auto-pick both dates).')
         return
       }
-      if (new Date(form.after) <= new Date(form.before)) {
-        setValidationError('After date must be after before date.')
-        return
-      }
-      if ((new Date(form.after).getTime() - new Date(form.before).getTime()) / 86400000 < 12) {
-        setValidationError('Use dates at least 12 days apart (NISAR revisit cycle).')
-        return
+      if (!afterLatest) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(form.after)) {
+          setValidationError('After date must be YYYY-MM-DD (or select After = latest available pass).')
+          return
+        }
+        if (new Date(form.after) <= new Date(form.before)) {
+          setValidationError('After date must be after before date.')
+          return
+        }
+        if ((new Date(form.after).getTime() - new Date(form.before).getTime()) / 86400000 < 12) {
+          setValidationError('Use dates at least 12 days apart (NISAR revisit cycle).')
+          return
+        }
       }
     }
     setValidationError(null)
-    setActiveJobId(null)
+    setActiveJob(null)
     startMutation.mutate({
       hazard,
       lat,
       lon,
       beforeDate: auto ? undefined : form.before,
-      afterDate: auto ? undefined : form.after,
+      afterDate: auto ? undefined : afterLatest ? 'latest' : form.after,
       datasetId: hazard === 'deformation' ? 'nisar_l2_gunw' : 'nisar_l2_gcov',
       band,
       window: windowSize,
@@ -218,10 +222,6 @@ export default function ChangeAnalysis() {
   }
 
   const result = jobQuery.data?.result ?? (running ? null : storedLastResult)
-  const previews = {
-    before: result?.before_granule?.browse_url ?? undefined,
-    after: result?.after_granule?.browse_url ?? undefined,
-  }
   const errorMessage =
     validationError ??
     (startMutation.error instanceof Error ? startMutation.error.message : null) ??
@@ -235,14 +235,15 @@ export default function ChangeAnalysis() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">Change Analysis</h1>
-        <button
-          type="button"
-          onClick={loadSample}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200"
-        >
-          <Sparkles size={14} /> Try a sample
-        </button>
+        <div>
+          <h1 className="text-2xl font-bold">Change Analysis</h1>
+          <p className="text-xs text-white/55">
+            Live NASA-ISRO NISAR Before vs After radar comparison — no mock or sample results.
+          </p>
+        </div>
+        <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
+          Real NASA Earthdata Only
+        </span>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">
@@ -289,18 +290,27 @@ export default function ChangeAnalysis() {
                     setForm({ ...form, before: e.target.value })
                     if (auto) setAuto(false)
                   }}
+                  placeholder={DEFAULT_BEFORE_DATE}
                   className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-white"
                 />
               </label>
               <label className="text-sm">
-                After {auto && <span className="text-[11px] text-white/45">(auto on)</span>}
+                After{' '}
+                {afterLatest ? (
+                  <span className="text-[11px] text-cyan-300">(latest pass auto)</span>
+                ) : auto ? (
+                  <span className="text-[11px] text-white/45">(auto on)</span>
+                ) : null}
                 <input
-                  value={form.after}
+                  value={afterLatest ? 'Latest available pass (auto)' : form.after}
+                  disabled={afterLatest}
                   onChange={(e) => {
                     setForm({ ...form, after: e.target.value })
+                    setAfterLatest(false)
                     if (auto) setAuto(false)
                   }}
-                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-white"
+                  placeholder="YYYY-MM-DD"
+                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-white disabled:opacity-60"
                 />
               </label>
             </div>
@@ -322,6 +332,7 @@ export default function ChangeAnalysis() {
                         const newest = ps[0].date
                         const oldest = ps[ps.length - 1].date
                         setForm((prev) => ({ ...prev, before: oldest, after: newest }))
+                        setAfterLatest(false)
                         setAuto(false)
                       }}
                       className="rounded bg-cyan-600/80 hover:bg-cyan-500 px-2 py-0.5 text-[11px] font-medium text-white"
@@ -338,10 +349,11 @@ export default function ChangeAnalysis() {
                       key={`chip-${p.date}-${p.orbit_direction}`}
                       onClick={() => {
                         setForm((prev) => ({ ...prev, after: p.date }))
+                        setAfterLatest(false)
                         setAuto(false)
                       }}
                       className={`rounded px-2 py-0.5 text-[11px] ${
-                        !auto && form.after === p.date
+                        !auto && !afterLatest && form.after === p.date
                           ? 'bg-blue-600 text-white'
                           : 'bg-white/10 text-white/75 hover:bg-white/20'
                       }`}
@@ -437,10 +449,38 @@ export default function ChangeAnalysis() {
                 Terrain slope check
               </label>
             </div>
-            <label className="text-sm flex items-center gap-2 pt-1">
-              <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
-              Auto dates — newest suitable granule pair (recommended)
-            </label>
+            <div className="flex flex-wrap gap-4 pt-1">
+              <label className="text-sm flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={afterLatest}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setAfterLatest(checked)
+                    if (checked) setAuto(false)
+                    else if (!form.after) {
+                      setForm((prev) => ({
+                        ...prev,
+                        after: passesQuery.data?.latest_acquisition ?? '',
+                      }))
+                    }
+                  }}
+                />
+                After = latest available pass (recommended)
+              </label>
+              <label className="text-sm flex items-center gap-2 text-white/75">
+                <input
+                  type="checkbox"
+                  checked={auto}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setAuto(checked)
+                    if (checked) setAfterLatest(false)
+                  }}
+                />
+                Auto-pick both dates (180d)
+              </label>
+            </div>
             <button
               type="submit"
               disabled={running || startMutation.isPending}
@@ -450,45 +490,52 @@ export default function ChangeAnalysis() {
             </button>
           </form>
 
-          {(running || result) && !result?.images?.before && (
-            <div className="grid md:grid-cols-2 gap-4">
-              {(['before', 'after'] as const).map((k) => (
-                <div key={k} className="bg-[#0c1424] rounded-xl border border-white/10 overflow-hidden">
-                  <p className="px-4 pt-3 text-sm font-semibold capitalize">
-                    {k}{' '}
-                    <span className="text-white/50 font-normal">
-                      {result?.actual_granule_dates?.[k] ?? ''}
-                    </span>
-                  </p>
-                  <div className="m-3 h-48 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center overflow-hidden">
-                    {previews[k] ? (
-                      <img src={previews[k]} alt={`${k} preview`} className="w-full h-full object-cover" />
-                    ) : running ? (
-                      <p className="text-white/40 text-sm">Streaming window via SSE…</p>
-                    ) : (
-                      <p className="text-white/40 text-sm text-center px-4">
-                        No browse preview published for this granule
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
           {running && (
-            <Card title="Analysis in progress">
-              <p className="capitalize">
-                {jobQuery.data?.stage || 'starting'}… {mmss} elapsed
-                {activeJobId ? ` · job ${activeJobId}` : ''}
-              </p>
-              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-cyan-500 transition-all"
-                  style={{ width: `${jobQuery.data?.progress ?? 5}%` }}
-                />
+            <div className="space-y-4">
+              <Card title="Live NASA Earthdata Analysis in Progress">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <p className="capitalize font-medium text-cyan-200">
+                    Stage: {jobQuery.data?.stage || 'starting'}…
+                  </p>
+                  <p className="text-xs text-white/70">
+                    {mmss} elapsed · {jobQuery.data?.progress ?? 5}% · job {activeJobId}
+                  </p>
+                </div>
+                <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-cyan-500 transition-all"
+                    style={{ width: `${jobQuery.data?.progress ?? 5}%` }}
+                  />
+                </div>
+                <p className="text-[11px] text-white/55">
+                  Streaming real NISAR HDF5 windows over HTTPS. You can navigate to other pages and
+                  return — this job continues running and will resume automatically.
+                </p>
+              </Card>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 rounded-xl border border-white/10 bg-[#0c1424] p-4">
+                {[
+                  { title: `1. Before (${auto ? 'auto' : form.before})` },
+                  { title: `2. After (${afterLatest || auto ? 'latest auto' : form.after})` },
+                  { title: '3. Detected Change' },
+                ].map((panel) => (
+                  <div key={panel.title} className="space-y-2">
+                    <p className="text-xs font-semibold text-white/75">{panel.title}</p>
+                    <Skeleton className="aspect-square w-full rounded-lg" />
+                  </div>
+                ))}
               </div>
-            </Card>
+
+              <div className="rounded-xl border border-white/10 bg-[#0c1424] p-4 space-y-3">
+                <Skeleton className="h-4 w-56" />
+                <div className="grid grid-cols-3 gap-3">
+                  <Skeleton className="h-14 w-full rounded-lg" />
+                  <Skeleton className="h-14 w-full rounded-lg" />
+                  <Skeleton className="h-14 w-full rounded-lg" />
+                </div>
+                <Skeleton className="h-44 w-full rounded-lg" />
+              </div>
+            </div>
           )}
           {errorMessage && (
             <Card title="Analysis could not complete">
@@ -501,7 +548,19 @@ export default function ChangeAnalysis() {
         <div className="space-y-4">
           <section className="bg-[#0c1424] rounded-xl border border-white/10 p-5">
             <h2 className="font-semibold mb-3">Analysis Results</h2>
-            {!result && <p className="text-sm text-white/50">Run a comparison or click “Try a sample”.</p>}
+            {!result && running && (
+              <div className="space-y-3">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-8 w-40" />
+                <Skeleton className="h-4 w-44" />
+                <Skeleton className="h-4 w-36" />
+              </div>
+            )}
+            {!result && !running && (
+              <p className="text-sm text-white/50">
+                Choose a point and click Compare to stream real NASA NISAR Before vs After passes.
+              </p>
+            )}
             {result && a && (
               <div className="space-y-3 text-sm">
                 <div>
@@ -516,9 +575,17 @@ export default function ChangeAnalysis() {
                   </div>
                   {result.severity && <SevBadge level={result.severity} />}
                 </div>
-                <div>
-                  <p className="text-white/50 text-xs">Mean Backscatter Change</p>
-                  <p className="font-semibold">{formatPower(a.mean_backscatter_difference_db, prefs.powerUnit)}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <p className="text-white/50 text-xs">Mean Δ Backscatter</p>
+                    <p className="font-semibold">{formatPower(a.mean_backscatter_difference_db, prefs.powerUnit)}</p>
+                  </div>
+                  <div>
+                    <p className="text-white/50 text-xs">% Area Changed</p>
+                    <p className="font-semibold">
+                      {(a.percentage_disturbed ?? a.percentage_decrease ?? 0).toFixed(1)}%
+                    </p>
+                  </div>
                 </div>
                 {result.confidence?.level && (
                   <div>

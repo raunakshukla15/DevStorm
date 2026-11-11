@@ -1,5 +1,5 @@
 import { API_BASE, apiFetch } from './client'
-import type { AnalysisResult, Job, JobStartResponse, JobSummary, PointInsights } from '../types/api'
+import type { Job, JobStartResponse, JobSummary, PointInsights } from '../types/api'
 
 export interface StartHazardParams {
   hazard: string
@@ -23,10 +23,6 @@ export function fetchJobs(limit = 50): Promise<JobSummary[]> {
 
 export function fetchJob(jobId: string): Promise<Job> {
   return apiFetch<Job>(`/analysis/jobs/${encodeURIComponent(jobId)}`)
-}
-
-export function fetchSampleResult(): Promise<AnalysisResult> {
-  return apiFetch<AnalysisResult>('/analysis/sample')
 }
 
 export function jobExportUrl(jobId: string, format: 'geojson' | 'tif' | 'csv' | 'png' | 'pdf'): string {
@@ -63,9 +59,9 @@ export function startHazardJob(params: StartHazardParams): Promise<JobStartRespo
     slope_mask: String(Boolean(params.slopeMask)),
   })
   if (params.datasetId) q.set('dataset_id', params.datasetId)
-  if (params.beforeDate && params.afterDate) {
+  if (params.beforeDate) {
     q.set('before_date', params.beforeDate)
-    q.set('after_date', params.afterDate)
+    q.set('after_date', params.afterDate || 'latest')
   }
   if (params.bbox && params.bbox.length === 4) {
     q.set('bbox', params.bbox.join(','))

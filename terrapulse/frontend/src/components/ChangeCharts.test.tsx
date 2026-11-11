@@ -1,15 +1,66 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import type { AnalysisResult } from '../types/api'
+import type { AnalysisResult as AnalysisResultData } from '../types/api'
+import { AnalysisResult } from './AnalysisResult'
 import { ChangeCharts } from './ChangeCharts'
 
-const LIVE_RESULT: AnalysisResult = {
+const LIVE_RESULT: AnalysisResultData = {
   success: true,
-  is_sample: false,
   status: 'analyzed',
+  hazard: 'flood',
+  hazard_label: 'Flood / standing water change',
+  data_source: 'NASA-ISRO NISAR via NASA Earthdata (live granules, windowed streaming)',
+  requested_dates: {
+    before: '2026-08-10',
+    after: 'latest (auto)',
+  },
   actual_granule_dates: {
-    before: '2026-08-10T12:30:00Z',
+    before: '2026-08-11T12:30:00Z',
     after: '2026-10-18T12:33:47Z',
+  },
+  date_differences: {
+    requested_before: '2026-08-10',
+    actual_before: '2026-08-11',
+    before_diff_days: 1,
+    before_differs: true,
+    requested_after: 'latest (auto)',
+    actual_after: '2026-10-18',
+    after_diff_days: null,
+    after_differs: false,
+    after_is_latest: true,
+    any_differs: true,
+    note: 'Before requested 2026-08-10; real pass used 2026-08-11 (+1d due to ~12-day NISAR repeat).',
+  },
+  same_orbit_pair: true,
+  location: { lat: 26.2, lon: 92.9 },
+  analysis: {
+    mean_backscatter_difference_db: -2.1,
+    std_difference_db: 1.4,
+    percentage_decrease: 38.0,
+    percentage_disturbed: 41.2,
+    affected_area_km2: 3.45,
+    area_basis: 'outline pixels x product ground spacing',
+    valid_pixels: 4800,
+    total_pixels: 4800,
+  },
+  images: {
+    before: 'before.png',
+    after: 'after.png',
+    difference: 'difference.png',
+  },
+  windows: {
+    size: 256,
+    before_layer: 'HH',
+    after_layer: 'HH',
+    before_origin: [0, 0],
+    before_shape: [256, 256],
+    after_origin: [0, 0],
+    after_shape: [256, 256],
+    bounds: [
+      [26.1, 92.8],
+      [26.3, 93.0],
+    ],
   },
   comparison: {
     before_mean_db: -9.85,
@@ -51,16 +102,30 @@ describe('ChangeCharts', () => {
 
     expect(screen.getByTestId('change-charts')).toBeTruthy()
     expect(screen.getByText(/Live NASA Earthdata NISAR/i)).toBeTruthy()
-    expect(screen.getByText(/Before vs After Backscatter Comparison \(2026-08-10 → 2026-10-18\)/i)).toBeTruthy()
+    expect(screen.getByText(/Before vs After Backscatter Comparison \(2026-08-11 → 2026-10-18\)/i)).toBeTruthy()
     expect(screen.getByText(/Total: 22.4s/i)).toBeTruthy()
 
     expect(screen.getByText(/Surface Change Classification/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Δ dB Bins/i }))
     expect(screen.getByText(/Δ Backscatter Shift Histogram/i)).toBeTruthy()
   })
+})
 
-  it('labels sample results explicitly', () => {
-    render(<ChangeCharts result={{ ...LIVE_RESULT, is_sample: true }} />)
-    expect(screen.getByText(/Sample demonstration/i)).toBeTruthy()
+describe('AnalysisResult real-data views', () => {
+  it('renders todays condition summary, requested vs real dates, and 3-panel imagery', () => {
+    render(
+      <MemoryRouter>
+        <AnalysisResult result={LIVE_RESULT} jobId="job123" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByTestId('todays-condition-summary')).toBeTruthy()
+    expect(screen.getByTestId('date-comparison-panel')).toBeTruthy()
+    expect(screen.getByText(/\+1d offset/i)).toBeTruthy()
+    expect(screen.getByText(/newest available pass/i)).toBeTruthy()
+    expect(screen.getByTestId('side-by-side-images')).toBeTruthy()
+    expect(screen.getByText(/1\. Before Pass/i)).toBeTruthy()
+    expect(screen.getByText(/2\. After Pass \(Latest\)/i)).toBeTruthy()
+    expect(screen.getByText(/3\. Detected Change/i)).toBeTruthy()
   })
 })

@@ -36,8 +36,72 @@ export function ResultMapOverlay({
   const afterImg = result.images?.after && effectiveJobId ? jobImageUrl(effectiveJobId, 'after.png') : null
   const activeOverlay = overlayLayer === 'difference' ? diffImg : overlayLayer === 'rgb' ? rgbImg : null
 
+  const beforeDate = result.actual_granule_dates?.before?.slice(0, 10) ?? result.requested_dates?.before ?? 'pre'
+  const afterDate = result.actual_granule_dates?.after?.slice(0, 10) ?? result.requested_dates?.after ?? 'latest'
+
   return (
     <div className="space-y-3">
+      {(beforeImg || afterImg || diffImg) && (
+        <div
+          className="grid grid-cols-1 md:grid-cols-3 gap-3 rounded-xl border border-white/10 bg-[#0a1120] p-3"
+          data-testid="side-by-side-images"
+        >
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-amber-200">1. Before Pass</span>
+              <span className="text-white/60">{beforeDate}</span>
+            </div>
+            <div className="aspect-square w-full overflow-hidden rounded-lg border border-white/10 bg-black/50 flex items-center justify-center">
+              {beforeImg ? (
+                <img
+                  src={beforeImg}
+                  alt={`Before NISAR backscatter (${beforeDate})`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="text-xs text-white/40">No raster image</span>
+              )}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-cyan-200">2. After Pass (Latest)</span>
+              <span className="text-white/60">{afterDate}</span>
+            </div>
+            <div className="aspect-square w-full overflow-hidden rounded-lg border border-white/10 bg-black/50 flex items-center justify-center">
+              {afterImg ? (
+                <img
+                  src={afterImg}
+                  alt={`After NISAR backscatter (${afterDate})`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="text-xs text-white/40">No raster image</span>
+              )}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-rose-200">3. Detected Change</span>
+              <span className="text-white/60">
+                {fmt(result.analysis?.mean_backscatter_difference_db, 2)} dB mean
+              </span>
+            </div>
+            <div className="aspect-square w-full overflow-hidden rounded-lg border border-white/10 bg-black/50 flex items-center justify-center">
+              {diffImg ? (
+                <img
+                  src={diffImg}
+                  alt={`Detected NISAR backscatter change (${beforeDate} to ${afterDate})`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="text-xs text-white/40">No change map</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2">
           <span className="text-white/60">Raster overlay:</span>

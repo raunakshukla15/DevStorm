@@ -29,6 +29,20 @@ export interface DatePair {
   after?: string | null
 }
 
+export interface DateDifferences {
+  requested_before?: string | null
+  actual_before?: string | null
+  before_diff_days?: number | null
+  before_differs?: boolean
+  requested_after?: string | null
+  actual_after?: string | null
+  after_diff_days?: number | null
+  after_differs?: boolean
+  after_is_latest?: boolean
+  any_differs?: boolean
+  note?: string | null
+}
+
 export interface LocationPoint {
   lat: number
   lon: number
@@ -101,7 +115,6 @@ export interface WindowsMetadata {
 
 export interface AnalysisResult {
   success: boolean
-  is_sample?: boolean
   status: string
   method?: string
   hazard?: string
@@ -111,6 +124,7 @@ export interface AnalysisResult {
   requested_dates?: DatePair
   auto_dates?: boolean
   actual_granule_dates?: DatePair
+  date_differences?: DateDifferences | null
   same_orbit_pair?: boolean
   location?: LocationPoint
   bbox?: number[] | null

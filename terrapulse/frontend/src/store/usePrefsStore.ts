@@ -51,11 +51,14 @@ interface PrefsState {
   profile: OperatorProfile
   viewedIds: string[]
   lastResult: AnalysisResult | null
+  activeJobId: string | null
+  activeJobStartedAt: number | null
   setPrefs: (next: Partial<UserPrefs>) => void
   setProfile: (next: Partial<OperatorProfile>) => void
   resetProfile: () => void
   markViewed: (jobId: string) => void
   setLastResult: (result: AnalysisResult | null) => void
+  setActiveJob: (jobId: string | null, startedAt?: number | null) => void
 }
 
 export const DEFAULT_PREFS: UserPrefs = {
@@ -89,6 +92,8 @@ export const usePrefsStore = create<PrefsState>()(
       profile: DEFAULT_PROFILE,
       viewedIds: [],
       lastResult: null,
+      activeJobId: null,
+      activeJobStartedAt: null,
       setPrefs: (next) =>
         set((state) => ({
           prefs: { ...state.prefs, ...next },
@@ -115,14 +120,25 @@ export const usePrefsStore = create<PrefsState>()(
             : { viewedIds: [...state.viewedIds, jobId] },
         ),
       setLastResult: (lastResult) => set({ lastResult }),
+      setActiveJob: (activeJobId, startedAt) =>
+        set({
+          activeJobId,
+          activeJobStartedAt: activeJobId ? (startedAt ?? Date.now()) : null,
+        }),
     }),
     {
       name: 'terrapulse:prefs-store',
       merge: (persistedState, currentState) => {
         const persisted = (persistedState as Partial<PrefsState> | undefined) ?? {}
+        const rawLast = persisted.lastResult as (AnalysisResult & { is_sample?: boolean }) | null | undefined
+        const cleanLast = rawLast && !rawLast.is_sample ? rawLast : null
         return {
           ...currentState,
           ...persisted,
+          lastResult: cleanLast,
+          activeJobId: typeof persisted.activeJobId === 'string' ? persisted.activeJobId : null,
+          activeJobStartedAt:
+            typeof persisted.activeJobStartedAt === 'number' ? persisted.activeJobStartedAt : null,
           prefs: {
             ...DEFAULT_PREFS,
             ...(persisted.prefs ?? {}),

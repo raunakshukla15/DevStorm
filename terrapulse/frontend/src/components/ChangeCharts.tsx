@@ -51,14 +51,8 @@ export function ChangeCharts({ result }: ChangeChartsProps) {
             <h3 className="text-sm font-semibold text-white">
               Before vs After Backscatter Comparison ({beforeDate} → {afterDate})
             </h3>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-                result.is_sample
-                  ? 'border border-amber-500/40 bg-amber-500/15 text-amber-200'
-                  : 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
-              }`}
-            >
-              {result.is_sample ? 'Sample demonstration' : 'Live NASA Earthdata NISAR'}
+            <span className="rounded-full px-2.5 py-0.5 text-[11px] font-medium border border-emerald-500/40 bg-emerald-500/15 text-emerald-200">
+              Live NASA Earthdata NISAR
             </span>
           </div>
           {comp && (

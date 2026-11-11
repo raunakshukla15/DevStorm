@@ -38,15 +38,23 @@ export function AnalysisResult({
     }
   }
 
+  const dd = result.date_differences
+  const reqBefore = dd?.requested_before ?? result.requested_dates?.before ?? 'auto'
+  const reqAfter = dd?.requested_after ?? result.requested_dates?.after ?? 'auto'
+  const actBefore =
+    dd?.actual_before ??
+    result.actual_granule_dates?.before?.slice(0, 10) ??
+    result.before_granule?.acquisition_date?.slice(0, 10) ??
+    'n/a'
+  const actAfter =
+    dd?.actual_after ??
+    result.actual_granule_dates?.after?.slice(0, 10) ??
+    result.after_granule?.acquisition_date?.slice(0, 10) ??
+    'n/a'
+  const pctChanged = a ? (a.percentage_disturbed ?? a.percentage_decrease) : null
+
   return (
     <div className="space-y-4">
-      {result.is_sample && (
-        <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
-          <strong>Guided Sample Demonstration:</strong> This walkthrough displays a precomputed NISAR L2
-          GCOV grid window. Submit a live run above to stream current Earthdata granules.
-        </div>
-      )}
-
       <Card
         title={
           result.status === 'metadata_only'
@@ -64,7 +72,7 @@ export function AnalysisResult({
                   : ''}
               </span>
             )}
-            {jobId && !result.is_sample && (
+            {jobId && (
               <button
                 type="button"
                 onClick={copyShareLink}
@@ -76,6 +84,77 @@ export function AnalysisResult({
           </div>
         }
       >
+        {a && (
+          <div
+            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3.5 space-y-2"
+            data-testid="todays-condition-summary"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-cyan-200">
+                Latest / Today&apos;s Condition Summary (pass {actAfter})
+              </p>
+              <span className="text-[11px] text-white/65">
+                Baseline {actBefore} → Latest {actAfter}
+                {result.same_orbit_pair === true
+                  ? ' · same orbit'
+                  : result.same_orbit_pair === false
+                    ? ' · cross-orbit'
+                    : ''}
+              </span>
+            </div>
+            <p className="text-xs text-white/85">
+              Mean backscatter changed by{' '}
+              <strong className="text-white">
+                {result.detection_mode === 'insar_phase'
+                  ? `${fmt(a.mean_backscatter_difference_db, 2)} cm`
+                  : formatPower(a.mean_backscatter_difference_db, powerUnit)}
+              </strong>{' '}
+              across the window, with{' '}
+              <strong className="text-white">{fmt(pctChanged, 1)}%</strong> area exceeding the threshold (
+              <strong className="text-white">{formatArea(a.affected_area_km2, areaUnit)}</strong>) — change
+              indicator only.
+            </p>
+          </div>
+        )}
+
+        <div
+          className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs space-y-1"
+          data-testid="date-comparison-panel"
+        >
+          <p className="font-semibold text-white">Real Acquisition Dates Used</p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <p>
+              <span className="text-white/55">Before:</span>{' '}
+              <strong className="text-amber-200">{actBefore}</strong>{' '}
+              <span className="text-white/55">
+                (requested: {reqBefore}
+                {typeof dd?.before_diff_days === 'number' && dd.before_diff_days !== 0
+                  ? `, ${dd.before_diff_days > 0 ? '+' : ''}${dd.before_diff_days}d offset`
+                  : dd?.before_diff_days === 0
+                    ? ', exact match'
+                    : ''}
+                )
+              </span>
+            </p>
+            <p>
+              <span className="text-white/55">After:</span>{' '}
+              <strong className="text-cyan-200">{actAfter}</strong>{' '}
+              <span className="text-white/55">
+                (requested: {reqAfter}
+                {typeof dd?.after_diff_days === 'number' && dd.after_diff_days !== 0
+                  ? `, ${dd.after_diff_days > 0 ? '+' : ''}${dd.after_diff_days}d offset`
+                  : dd?.after_diff_days === 0
+                    ? ', exact match'
+                    : dd?.after_is_latest
+                      ? ', newest available pass'
+                      : ''}
+                )
+              </span>
+            </p>
+          </div>
+          {dd?.note && <p className="text-amber-200/90">{dd.note}</p>}
+        </div>
+
         <p>
           <span className="text-white/50">Source:</span> {result.data_source}
         </p>
@@ -92,16 +171,6 @@ export function AnalysisResult({
           </p>
         )}
         {result.interpretation && <p className="text-cyan-100/90">{result.interpretation}</p>}
-        {result.auto_dates && result.actual_granule_dates && (
-          <p className="text-xs">
-            Auto pair: {result.actual_granule_dates.before} → {result.actual_granule_dates.after}
-            {result.same_orbit_pair === true
-              ? ' (same orbit)'
-              : result.same_orbit_pair === false
-                ? ' (cross-orbit — lower confidence)'
-                : ''}
-          </p>
-        )}
         {result.processing_note && <p className="text-amber-200">{result.processing_note}</p>}
 
         {a && (
@@ -185,7 +254,7 @@ export function AnalysisResult({
               <Download size={13} /> GeoJSON
             </button>
           )}
-          {jobId && !result.is_sample && (
+          {jobId && (
             <>
               <a
                 href={jobExportUrl(jobId, 'tif')}
