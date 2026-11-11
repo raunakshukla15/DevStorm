@@ -60,7 +60,12 @@ def check_watchlist_once(
     errors: List[str] = []
 
     if items and not provider.is_authenticated() and not provider.authenticate():
-        return {"checked": 0, "alerts_created": 0, "alerts": [], "errors": ["Earthdata auth unavailable"]}
+        return {
+            "checked": 0,
+            "alerts_created": 0,
+            "alerts": [],
+            "errors": ["Earthdata auth unavailable"],
+        }
 
     end_str = datetime.now().strftime("%Y-%m-%d")
     start_str = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")

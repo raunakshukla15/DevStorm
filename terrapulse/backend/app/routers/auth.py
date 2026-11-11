@@ -15,7 +15,9 @@ async def health():
     return HealthResponse(status="healthy", service="terrapulse-backend")
 
 
-@router.get("/auth/status", response_model=AuthStatusResponse, summary="Live Earthdata connection check")
+@router.get(
+    "/auth/status", response_model=AuthStatusResponse, summary="Live Earthdata connection check"
+)
 async def auth_status():
     """Actually attempts authentication and reports the real outcome.
 

@@ -112,7 +112,10 @@ def _parse_bbox(raw_bbox: Optional[str]) -> Optional[List[float]]:
 async def hazard_analysis(
     request: Request,
     background_tasks: BackgroundTasks,
-    hazard: str = Query(..., description="flood | tsunami | hurricane | volcano | earthquake | forest_disturbance | landslide | agriculture | deformation"),
+    hazard: str = Query(
+        ...,
+        description="flood | tsunami | hurricane | volcano | earthquake | forest_disturbance | landslide | agriculture | deformation",
+    ),
     lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
     lon: float = Query(..., ge=-180, le=180, description="Center longitude"),
     before_date: Optional[str] = Query(
@@ -125,8 +128,12 @@ async def hazard_analysis(
     bbox: Optional[str] = Query(None, description="Optional AOI bbox 'west,south,east,north'"),
     speckle_filter: str = Query("none", description="Speckle filter: none | boxcar | lee"),
     threshold_mode: str = Query("fixed", description="Threshold mode: fixed | otsu | mean_std"),
-    water_mask: bool = Query(False, description="Apply auxiliary permanent water mask metadata check"),
-    slope_mask: bool = Query(False, description="Apply auxiliary DEM terrain slope mask metadata check"),
+    water_mask: bool = Query(
+        False, description="Apply auxiliary permanent water mask metadata check"
+    ),
+    slope_mask: bool = Query(
+        False, description="Apply auxiliary DEM terrain slope mask metadata check"
+    ),
 ):
     """Start a hazard-specific live NISAR analysis as a background job."""
     hazard = (hazard or "").lower()
@@ -152,13 +159,21 @@ async def hazard_analysis(
     cfg = HAZARD_CONFIGS[hazard]
     chosen_band = (band or cfg.get("default_band") or "HH").upper()
     if chosen_band not in SUPPORTED_BANDS:
-        raise HTTPException(status_code=400, detail=f"Unsupported band '{chosen_band}'. Use {SUPPORTED_BANDS}.")
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported band '{chosen_band}'. Use {SUPPORTED_BANDS}."
+        )
     chosen_filter = (speckle_filter or "none").lower()
     if chosen_filter not in SPECKLE_METHODS:
-        raise HTTPException(status_code=400, detail=f"Unsupported speckle_filter '{chosen_filter}'. Use {SPECKLE_METHODS}.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported speckle_filter '{chosen_filter}'. Use {SPECKLE_METHODS}.",
+        )
     chosen_thresh = (threshold_mode or "fixed").lower()
     if chosen_thresh not in THRESHOLD_MODES:
-        raise HTTPException(status_code=400, detail=f"Unsupported threshold_mode '{chosen_thresh}'. Use {THRESHOLD_MODES}.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported threshold_mode '{chosen_thresh}'. Use {THRESHOLD_MODES}.",
+        )
 
     parsed_bbox = _parse_bbox(bbox)
     chosen_dataset = dataset_id or cfg.get("dataset_id") or "nisar_l2_gcov"

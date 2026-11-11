@@ -240,4 +240,3 @@ def test_window_validation_health_cors_and_geocode(tmp_path, monkeypatch):
     r2 = client.get("/api/v1/geocode", params={"q": "Assam", "limit": 1})
     assert r2.status_code == 200
     assert len(calls) == 1
-

@@ -40,18 +40,20 @@ def _normalize_usgs(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
             date_str = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
         mag = props.get("mag")
-        out.append({
-            "id": f"usgs:{feat.get('id')}",
-            "source": "USGS",
-            "title": str(props.get("title") or props.get("place") or "USGS Earthquake"),
-            "hazard": "earthquake",
-            "lat": float(coords[1]),
-            "lon": float(coords[0]),
-            "date": date_str,
-            "magnitude": float(mag) if isinstance(mag, (int, float)) else None,
-            "category": "Earthquake",
-            "url": props.get("url"),
-        })
+        out.append(
+            {
+                "id": f"usgs:{feat.get('id')}",
+                "source": "USGS",
+                "title": str(props.get("title") or props.get("place") or "USGS Earthquake"),
+                "hazard": "earthquake",
+                "lat": float(coords[1]),
+                "lon": float(coords[0]),
+                "date": date_str,
+                "magnitude": float(mag) if isinstance(mag, (int, float)) else None,
+                "category": "Earthquake",
+                "url": props.get("url"),
+            }
+        )
     return out
 
 
@@ -81,18 +83,20 @@ def _normalize_eonet(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         raw_date = str(latest.get("date") or "")[:10]
         cat_str = ", ".join(str(c) for c in cats if c) or None
-        out.append({
-            "id": f"eonet:{ev.get('id')}",
-            "source": "EONET",
-            "title": str(ev.get("title") or "EONET Event"),
-            "hazard": hazard,
-            "lat": lat,
-            "lon": lon,
-            "date": raw_date,
-            "magnitude": None,
-            "category": cat_str,
-            "url": ev.get("link"),
-        })
+        out.append(
+            {
+                "id": f"eonet:{ev.get('id')}",
+                "source": "EONET",
+                "title": str(ev.get("title") or "EONET Event"),
+                "hazard": hazard,
+                "lat": lat,
+                "lon": lon,
+                "date": raw_date,
+                "magnitude": None,
+                "category": cat_str,
+                "url": ev.get("link"),
+            }
+        )
     return out
 
 

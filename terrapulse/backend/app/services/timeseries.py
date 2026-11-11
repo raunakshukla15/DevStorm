@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -96,8 +96,14 @@ def run_timeseries_job(
                 if not np.any(pos):
                     processed += 1
                     db.upsert_timeseries_job(
-                        series_id, lat, lon, band, months,
-                        status="running", total_granules=total, processed_granules=processed,
+                        series_id,
+                        lat,
+                        lon,
+                        band,
+                        months,
+                        status="running",
+                        total_granules=total,
+                        processed_granules=processed,
                     )
                     continue
                 db_vals = 10.0 * np.log10(np.maximum(vals[pos], eps))
@@ -136,6 +142,4 @@ def run_timeseries_job(
         )
     except Exception as e:
         logger.error("Timeseries job %s failed: %s", series_id, e, exc_info=True)
-        db.upsert_timeseries_job(
-            series_id, lat, lon, band, months, status="failed", error=str(e)
-        )
+        db.upsert_timeseries_job(series_id, lat, lon, band, months, status="failed", error=str(e))

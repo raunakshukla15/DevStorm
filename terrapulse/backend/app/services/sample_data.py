@@ -42,7 +42,9 @@ def get_sample_nisar_result() -> Dict[str, Any]:
     )
     px = sum(int(f["properties"]["pixel_count"]) for f in gj["features"])
     area_km2 = round(px * 400.0 / 1e6, 4)
-    conf_score, conf_level = compute_polygon_confidence(-4.2, -2.0, px, same_orbit=True, temporal_days=12.0)
+    conf_score, conf_level = compute_polygon_confidence(
+        -4.2, -2.0, px, same_orbit=True, temporal_days=12.0
+    )
     sev, _ = compute_severity_area_confidence(area_km2, conf_score)
 
     return {

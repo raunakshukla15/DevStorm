@@ -124,7 +124,9 @@ async def check_availability(
                 available=True,
                 short_name=sn,
                 count=result.get("count"),
-                datasets=[GranuleSummaryOut(**summarize_granule(g)) for g in result.get("datasets", [])],
+                datasets=[
+                    GranuleSummaryOut(**summarize_granule(g)) for g in result.get("datasets", [])
+                ],
                 note=result.get("note"),
             )
 

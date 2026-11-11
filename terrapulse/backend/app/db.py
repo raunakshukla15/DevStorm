@@ -135,7 +135,9 @@ def _utc_iso() -> str:
 
 
 def resolve_db_path(db_path: Optional[str] = None) -> Path:
-    raw = db_path or os.getenv("TERRAPULSE_DB_PATH") or os.getenv("DB_PATH") or "./data/terrapulse.db"
+    raw = (
+        db_path or os.getenv("TERRAPULSE_DB_PATH") or os.getenv("DB_PATH") or "./data/terrapulse.db"
+    )
     p = Path(raw)
     if not p.is_absolute():
         p = (_BACKEND_DIR / p).resolve()
@@ -165,7 +167,9 @@ def init_db(db_path: Optional[str] = None) -> None:
         if "granule_id" not in cols:
             with _engine.begin() as conn:
                 conn.execute(text("ALTER TABLE alerts ADD COLUMN granule_id VARCHAR(160)"))
-    _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    _SessionLocal = sessionmaker(
+        bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False
+    )
     _current_db_path = resolved_str
 
 
@@ -179,7 +183,9 @@ def get_session() -> Session:
 # ---------------- Jobs ----------------
 
 
-def create_job(job_id: str, params: Dict[str, Any], created_at: Optional[str] = None) -> Dict[str, Any]:
+def create_job(
+    job_id: str, params: Dict[str, Any], created_at: Optional[str] = None
+) -> Dict[str, Any]:
     ts = created_at or _utc_iso()
     with get_session() as db:
         db.add(
@@ -278,21 +284,25 @@ def list_jobs(limit: int = 20) -> List[Dict[str, Any]]:
         )
         items: List[Dict[str, Any]] = []
         for row, res_row in rows:
-            items.append({
-                "job_id": row.job_id,
-                "status": row.status,
-                "stage": row.stage,
-                "progress": row.progress,
-                "params": row.params or {},
-                "created_at": row.created_at,
-                "result": res_row.result if res_row is not None else None,
-                "error": row.error,
-            })
+            items.append(
+                {
+                    "job_id": row.job_id,
+                    "status": row.status,
+                    "stage": row.stage,
+                    "progress": row.progress,
+                    "params": row.params or {},
+                    "created_at": row.created_at,
+                    "result": res_row.result if res_row is not None else None,
+                    "error": row.error,
+                }
+            )
         return items
 
 
 def prune_expired_jobs(ttl_days: int = 30) -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat().replace("+00:00", "Z")
+    cutoff = (
+        (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat().replace("+00:00", "Z")
+    )
     with get_session() as db:
         old = db.query(JobRow).filter(JobRow.created_at < cutoff).all()
         count = len(old)
@@ -555,9 +565,7 @@ def delete_watchlist_item(item_id: int) -> bool:
         return True
 
 
-def update_watchlist_checked(
-    item_id: int, last_granule_date: Optional[str] = None
-) -> None:
+def update_watchlist_checked(item_id: int, last_granule_date: Optional[str] = None) -> None:
     with get_session() as db:
         row = db.get(WatchlistRow, item_id)
         if row is None:

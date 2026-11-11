@@ -111,7 +111,9 @@ async def discover_datasets():
     return [DiscoveredCollectionOut(**c) for c in cols]
 
 
-@router.get("/datasets/{dataset_id}", response_model=DatasetDetailOut, summary="Get dataset details")
+@router.get(
+    "/datasets/{dataset_id}", response_model=DatasetDetailOut, summary="Get dataset details"
+)
 async def get_dataset(dataset_id: str):
     """Get detailed information about a supported dataset."""
     provider = cache.get_provider()

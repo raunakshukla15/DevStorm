@@ -1,18 +1,12 @@
 """Phase 3 tests: speckle/Otsu/HH-HV, AOI bbox+stride, renders/exports, feeds, timeseries, watchlist."""
 
 from datetime import datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
-import sys
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 import numpy as np
 import xarray as xr
-
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
 from app import db
 from app.main import app
@@ -133,7 +127,9 @@ def test_renders_exports_and_sse(tmp_path, monkeypatch):
     job_id = "jobphase3exp"
     db.create_job(job_id, {"hazard": "flood", "lat": -1.5, "lon": -52.0, "band": "HH"})
     imgs = renders.save_job_visuals(job_id, before_db, after_db, diff_db, x, y, "EPSG:32722")
-    gj = export_geojson(diff_db, crs="EPSG:32722", threshold=-2.0, x_coords=x, y_coords=y, spacing_m=[20.0, 20.0])
+    gj = export_geojson(
+        diff_db, crs="EPSG:32722", threshold=-2.0, x_coords=x, y_coords=y, spacing_m=[20.0, 20.0]
+    )
     db.save_job_result(
         job_id,
         {
@@ -186,7 +182,12 @@ def test_aoi_crud_and_events_live_mocked(tmp_path, monkeypatch):
         "features": [
             {
                 "id": "us100",
-                "properties": {"title": "M 5.4 - Offshore", "mag": 5.4, "time": 1760000000000, "url": "https://usgs.gov"},
+                "properties": {
+                    "title": "M 5.4 - Offshore",
+                    "mag": 5.4,
+                    "time": 1760000000000,
+                    "url": "https://usgs.gov",
+                },
                 "geometry": {"coordinates": [-72.1, -13.2, 10]},
             }
         ]
@@ -204,16 +205,24 @@ def test_aoi_crud_and_events_live_mocked(tmp_path, monkeypatch):
 
     async def fake_get(self, url, *args, **kwargs):
         if "usgs" in str(url):
-            return SimpleNamespace(status_code=200, json=lambda: usgs_mock, raise_for_status=lambda: None)
-        return SimpleNamespace(status_code=200, json=lambda: eonet_mock, raise_for_status=lambda: None)
+            return SimpleNamespace(
+                status_code=200, json=lambda: usgs_mock, raise_for_status=lambda: None
+            )
+        return SimpleNamespace(
+            status_code=200, json=lambda: eonet_mock, raise_for_status=lambda: None
+        )
 
     with TestClient(app) as client:
-        r_post = client.post("/api/v1/aois", json={"name": "Test Box", "bbox": [-52.1, -1.6, -51.9, -1.4]})
+        r_post = client.post(
+            "/api/v1/aois", json={"name": "Test Box", "bbox": [-52.1, -1.6, -51.9, -1.4]}
+        )
         assert r_post.status_code == 201
         aoi = r_post.json()
         assert 400.0 < aoi["area_km2"] < 600.0
 
-        r_bad = client.post("/api/v1/aois", json={"name": "Bad", "bbox": [-51.0, -1.0, -52.0, -2.0]})
+        r_bad = client.post(
+            "/api/v1/aois", json={"name": "Bad", "bbox": [-51.0, -1.0, -52.0, -2.0]}
+        )
         assert r_bad.status_code == 400
 
         assert len(client.get("/api/v1/aois").json()) == 1
@@ -235,8 +244,20 @@ def test_timeseries_and_watchlist_no_duplicate_alerts(tmp_path, monkeypatch):
     d1 = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
     d2 = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     fake_granules = [
-        {"id": "G1", "title": "NISAR_G1", "acquisition_date": d1, "orbit_direction": "ascending", "https_link": "https://x/1.h5"},
-        {"id": "G2", "title": "NISAR_G2", "acquisition_date": d2, "orbit_direction": "ascending", "https_link": "https://x/2.h5"},
+        {
+            "id": "G1",
+            "title": "NISAR_G1",
+            "acquisition_date": d1,
+            "orbit_direction": "ascending",
+            "https_link": "https://x/1.h5",
+        },
+        {
+            "id": "G2",
+            "title": "NISAR_G2",
+            "acquisition_date": d2,
+            "orbit_direction": "ascending",
+            "https_link": "https://x/2.h5",
+        },
     ]
 
     class FakeProvider:
@@ -249,7 +270,9 @@ def test_timeseries_and_watchlist_no_duplicate_alerts(tmp_path, monkeypatch):
         def search_datasets(self, **kwargs):
             return fake_granules
 
-        def stream_backscatter_window(self, https_url, band="HH", window=256, lat=None, lon=None, bbox=None):
+        def stream_backscatter_window(
+            self, https_url, band="HH", window=256, lat=None, lon=None, bbox=None
+        ):
             val = 0.01 if "1.h5" in https_url else 0.1
             arr = np.full((128, 128), val, dtype=np.float64)
             if "2.h5" in https_url:
@@ -285,7 +308,12 @@ def test_timeseries_and_watchlist_no_duplicate_alerts(tmp_path, monkeypatch):
 
         # Watchlist alert & deduplication
         item = db.create_watchlist_item(
-            "Amazon Site", -1.5, -52.0, hazard="flood", severity_threshold="Medium", email="ops@example.com"
+            "Amazon Site",
+            -1.5,
+            -52.0,
+            hazard="flood",
+            severity_threshold="Medium",
+            email="ops@example.com",
         )
         res1 = alerts_worker.check_watchlist_once(notifier=fake_send)
         assert res1["alerts_created"] == 1

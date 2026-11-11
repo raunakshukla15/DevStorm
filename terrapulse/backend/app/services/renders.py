@@ -95,7 +95,6 @@ def _diverging_rgba(diff: np.ndarray, limit_db: float = 5.0) -> np.ndarray:
     vals = np.where(valid, diff, 0.0)
 
     neg_t = np.clip(-vals / lim, 0.0, 1.0)
-    pos_t = np.clip(vals / lim, 0.0, 1.0)
 
     # Strong drops -> bright red/orange (#ef4444); strong increases -> cyan/blue (#38bdf8)
     r = np.where(vals < 0, 239, 56).astype(np.uint8)
@@ -113,9 +112,13 @@ def _diverging_rgba(diff: np.ndarray, limit_db: float = 5.0) -> np.ndarray:
     return rgba
 
 
-def _rgb_composite_rgba(before_db: np.ndarray, after_db: np.ndarray, hv_diff: Optional[np.ndarray] = None) -> np.ndarray:
+def _rgb_composite_rgba(
+    before_db: np.ndarray, after_db: np.ndarray, hv_diff: Optional[np.ndarray] = None
+) -> np.ndarray:
     """False-color SAR composite: R=after, G=before (or HV diff), B=before."""
-    lo, hi = _stretch_bounds(np.concatenate([before_db[np.isfinite(before_db)], after_db[np.isfinite(after_db)]]))
+    lo, hi = _stretch_bounds(
+        np.concatenate([before_db[np.isfinite(before_db)], after_db[np.isfinite(after_db)]])
+    )
     span = max(hi - lo, 1e-6)
     valid = np.isfinite(before_db) & np.isfinite(after_db)
     r_ch = np.clip((np.where(valid, after_db, lo) - lo) / span, 0.0, 1.0)
@@ -149,7 +152,9 @@ def save_job_visuals(
 
     b_fin = before_db[np.isfinite(before_db)]
     a_fin = after_db[np.isfinite(after_db)]
-    combined = np.concatenate([b_fin, a_fin]) if (b_fin.size or a_fin.size) else np.array([-25.0, 0.0])
+    combined = (
+        np.concatenate([b_fin, a_fin]) if (b_fin.size or a_fin.size) else np.array([-25.0, 0.0])
+    )
     vmin, vmax = _stretch_bounds(combined)
 
     outputs: Dict[str, bytes] = {

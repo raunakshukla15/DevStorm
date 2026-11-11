@@ -2,7 +2,17 @@
 
 from fastapi import APIRouter
 
-from app.routers import analysis, aois, auth, datasets, events, jobs, observations, timeseries, watchlist
+from app.routers import (
+    analysis,
+    aois,
+    auth,
+    datasets,
+    events,
+    jobs,
+    observations,
+    timeseries,
+    watchlist,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 

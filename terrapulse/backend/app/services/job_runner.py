@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import logging
+import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -31,6 +33,21 @@ from app.services.nisar_provider import MAX_WINDOW_PIXELS
 
 logger = logging.getLogger(__name__)
 
+_JOB_SEMAPHORE_LOCK = threading.Lock()
+_JOB_SEMAPHORE_CAP: Optional[int] = None
+_JOB_SEMAPHORE: Optional[threading.Semaphore] = None
+
+
+def _get_job_semaphore() -> threading.Semaphore:
+    """Return process-wide job concurrency cap semaphore (configurable via MAX_CONCURRENT_JOBS)."""
+    global _JOB_SEMAPHORE_CAP, _JOB_SEMAPHORE
+    cap = max(1, int(os.getenv("MAX_CONCURRENT_JOBS", "2")))
+    with _JOB_SEMAPHORE_LOCK:
+        if _JOB_SEMAPHORE is None or _JOB_SEMAPHORE_CAP != cap:
+            _JOB_SEMAPHORE_CAP = cap
+            _JOB_SEMAPHORE = threading.Semaphore(cap)
+        return _JOB_SEMAPHORE
+
 
 def parse_granule_date(g: Dict[str, Any]) -> Optional[datetime]:
     raw = g.get("acquisition_date") or (g.get("temporal_begin") or "")[:10]
@@ -40,9 +57,7 @@ def parse_granule_date(g: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def _granule_contains_point(
-    g: Dict[str, Any], lat: Optional[float], lon: Optional[float]
-) -> bool:
+def _granule_contains_point(g: Dict[str, Any], lat: Optional[float], lon: Optional[float]) -> bool:
     if lat is None or lon is None:
         return True
     bb = g.get("bounding_box")
@@ -181,7 +196,9 @@ def _run_insar_deformation_job(
     used_sn = None
     for sn in resolve_short_names(dataset_id):
         try:
-            found = cache.cached_search(provider, sn, (before_date, after_date), search_bbox, count=20)
+            found = cache.cached_search(
+                provider, sn, (before_date, after_date), search_bbox, count=20
+            )
             if found:
                 granules = found
                 used_sn = sn
@@ -218,7 +235,9 @@ def _run_insar_deformation_job(
                     f"GUNW interferogram found, but HTTPS group streaming failed ({e}). "
                     "Use the product link for external ISCE3/HDF5 inspection."
                 ),
-                "caveats_and_limitations": [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
+                "caveats_and_limitations": [
+                    f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])
+                ],
                 "produced_at": datetime.now().isoformat() + "Z",
             },
         )
@@ -315,7 +334,9 @@ def _run_insar_deformation_job(
             "after_granule": summarize_granule(granule),
             "images": images,
             "analysis": {
-                "mean_backscatter_difference_db": round(float(np.nanmean(los_masked)), 3) if valid_px else None,
+                "mean_backscatter_difference_db": (
+                    round(float(np.nanmean(los_masked)), 3) if valid_px else None
+                ),
                 "std_difference_db": round(float(np.nanstd(los_masked)), 3) if valid_px else None,
                 "percentage_decrease": round(pct_def, 2),
                 "percentage_disturbed": round(pct_def, 2),
@@ -328,7 +349,8 @@ def _run_insar_deformation_job(
             "results": {"deformation_outlines": gj},
             "caveats_and_limitations": [
                 "InSAR LOS phase requires phase unwrapping verification and orbital ramp removal",
-            ] + [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
+            ]
+            + [f"CANNOT conclude: {c}" for c in config.get("cannot_say", [])],
             "confidence": {
                 "score": conf_score,
                 "level": conf_level,
@@ -383,6 +405,54 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             fail("After date must be after before date.")
             return
 
+    with _get_job_semaphore():
+        _execute_analysis_job(
+            job_id=job_id,
+            hazard=hazard,
+            config=config,
+            params=params,
+            before_date=before_date,
+            after_date=after_date,
+            before_dt=before_dt,
+            after_dt=after_dt,
+            auto_dates=auto_dates,
+            lat=lat,
+            lon=lon,
+            aoi_bbox=aoi_bbox,
+            dataset_id=dataset_id,
+            band=band,
+            speckle_filter=speckle_filter,
+            threshold_mode=threshold_mode,
+            water_mask=water_mask,
+            slope_mask=slope_mask,
+            req_window=req_window,
+            fail=fail,
+        )
+
+
+def _execute_analysis_job(
+    *,
+    job_id: str,
+    hazard: str,
+    config: Dict[str, Any],
+    params: Dict[str, Any],
+    before_date: Optional[str],
+    after_date: Optional[str],
+    before_dt: Optional[datetime],
+    after_dt: Optional[datetime],
+    auto_dates: bool,
+    lat: float,
+    lon: float,
+    aoi_bbox: Any,
+    dataset_id: str,
+    band: str,
+    speckle_filter: str,
+    threshold_mode: str,
+    water_mask: bool,
+    slope_mask: bool,
+    req_window: int,
+    fail: Any,
+) -> None:
     try:
         set_stage(job_id, "authenticating", 5)
         provider = cache.get_provider()
@@ -553,19 +623,35 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
         )
 
         bx = np.asarray(
-            b_win.get("x_coords") if b_win.get("x_coords") is not None else np.arange(b_raw_db.shape[1]),
+            (
+                b_win.get("x_coords")
+                if b_win.get("x_coords") is not None
+                else np.arange(b_raw_db.shape[1])
+            ),
             dtype=np.float64,
         )
         by = np.asarray(
-            b_win.get("y_coords") if b_win.get("y_coords") is not None else np.arange(b_raw_db.shape[0]),
+            (
+                b_win.get("y_coords")
+                if b_win.get("y_coords") is not None
+                else np.arange(b_raw_db.shape[0])
+            ),
             dtype=np.float64,
         )
         ax = np.asarray(
-            a_win.get("x_coords") if a_win.get("x_coords") is not None else np.arange(a_raw_db.shape[1]),
+            (
+                a_win.get("x_coords")
+                if a_win.get("x_coords") is not None
+                else np.arange(a_raw_db.shape[1])
+            ),
             dtype=np.float64,
         )
         ay = np.asarray(
-            a_win.get("y_coords") if a_win.get("y_coords") is not None else np.arange(a_raw_db.shape[0]),
+            (
+                a_win.get("y_coords")
+                if a_win.get("y_coords") is not None
+                else np.arange(a_raw_db.shape[0])
+            ),
             dtype=np.float64,
         )
 
@@ -603,9 +689,13 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             tol = max(abs(float(sp_align[0])), abs(float(sp_align[1]))) * 1.5
             after_ds = after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)
             if a_raw_db.shape == ay.shape + ax.shape:
-                raw_after_ds = xr.Dataset({"sigma0_db": (["y", "x"], a_raw_db)}, coords={"y": ay, "x": ax})
+                raw_after_ds = xr.Dataset(
+                    {"sigma0_db": (["y", "x"], a_raw_db)}, coords={"y": ay, "x": ax}
+                )
                 a_raw_db = np.asarray(
-                    raw_after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)["sigma0_db"].values,
+                    raw_after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)[
+                        "sigma0_db"
+                    ].values,
                     dtype=np.float64,
                 )
 
@@ -639,7 +729,9 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
                 raw_stats = {
                     "mean_difference_db": round(float(np.mean(raw_fin)), 3),
                     "std_difference_db": round(float(np.std(raw_fin)), 3),
-                    "percentage_decrease": round(float(np.sum(raw_fin < -2.0) / raw_fin.size * 100.0), 2),
+                    "percentage_decrease": round(
+                        float(np.sum(raw_fin < -2.0) / raw_fin.size * 100.0), 2
+                    ),
                 }
 
         mode = config.get("mode", "decrease")
@@ -721,9 +813,7 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             apply_slope_mask=slope_mask,
         )
         aux_notes = (
-            [str(aux_raw["note"])]
-            if (water_mask or slope_mask) and aux_raw.get("note")
-            else []
+            [str(aux_raw["note"])] if (water_mask or slope_mask) and aux_raw.get("note") else []
         )
         aux_masks = {
             "water_mask_requested": water_mask,

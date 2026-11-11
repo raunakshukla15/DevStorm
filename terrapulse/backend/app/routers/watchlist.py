@@ -17,12 +17,21 @@ async def list_watchlist():
     return [WatchlistOut(**w) for w in db.list_watchlist()]
 
 
-@router.post("/watchlist", response_model=WatchlistOut, status_code=201, summary="Add a location to watchlist")
+@router.post(
+    "/watchlist",
+    response_model=WatchlistOut,
+    status_code=201,
+    summary="Add a location to watchlist",
+)
 async def create_watchlist(payload: WatchlistCreate):
     hazard = (payload.hazard or "flood").lower()
     if hazard not in HAZARD_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Unsupported hazard '{hazard}'.")
-    sev = payload.severity_threshold if payload.severity_threshold in {"Low", "Medium", "High"} else "Medium"
+    sev = (
+        payload.severity_threshold
+        if payload.severity_threshold in {"Low", "Medium", "High"}
+        else "Medium"
+    )
     row = db.create_watchlist_item(
         name=payload.name.strip(),
         lat=payload.lat,

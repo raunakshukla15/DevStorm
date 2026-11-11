@@ -81,9 +81,7 @@ def calculate_backscatter_difference(
         if before_backscatter is None or after_backscatter is None:
             raise ValueError(
                 "Could not find backscatter variables in datasets. "
-                "Available before: {}, after: {}".format(
-                    list(before_vars), list(after_vars)
-                )
+                "Available before: {}, after: {}".format(list(before_vars), list(after_vars))
             )
 
         # Ensure we're working with 2D numpy arrays (y, x grid)
@@ -112,9 +110,7 @@ def calculate_backscatter_difference(
         if valid_count > 0:
             mean_diff = float(np.nanmean(difference_masked[valid_mask]))
             std_diff = float(np.nanstd(difference_masked[valid_mask]))
-            pct_decrease = float(
-                np.sum(difference_masked < 0) / valid_count * 100
-            )
+            pct_decrease = float(np.sum(difference_masked < 0) / valid_count * 100)
         else:
             mean_diff = None
             std_diff = None
@@ -141,8 +137,7 @@ def calculate_backscatter_difference(
         }
 
         logger.info(
-            "Calculated backscatter difference: mean=%.3f, "
-            "%s%.1f%% pixels show decrease",
+            "Calculated backscatter difference: mean=%.3f, " "%s%.1f%% pixels show decrease",
             mean_diff,
             "~" if mean_diff is None else "",
             pct_decrease,
@@ -196,11 +191,13 @@ def validate_observation_compatibility(
 
         # Handle both string and list/tuple polarization formats
         before_pol_str = (
-            str(before_pol[0]) if isinstance(before_pol, (list, tuple)) 
+            str(before_pol[0])
+            if isinstance(before_pol, (list, tuple))
             else (str(before_pol) if before_pol else "unknown")
         )
         after_pol_str = (
-            str(after_pol[0]) if isinstance(after_pol, (list, tuple)) 
+            str(after_pol[0])
+            if isinstance(after_pol, (list, tuple))
             else (str(after_pol) if after_pol else "unknown")
         )
 
@@ -251,12 +248,8 @@ def validate_observation_compatibility(
         before_date = before_ds.attrs.get("acquisition_date", None)
         after_date = after_ds.attrs.get("acquisition_date", None)
 
-        before_date_str = (
-            str(before_date) if before_date is not None else "unknown"
-        )
-        after_date_str = (
-            str(after_date) if after_date is not None else "unknown"
-        )
+        before_date_str = str(before_date) if before_date is not None else "unknown"
+        after_date_str = str(after_date) if after_date is not None else "unknown"
 
         validation["checks"]["acquisition_dates"] = {
             "before": before_date_str,
@@ -364,7 +357,11 @@ def apply_speckle_filter(
     if not np.any(valid):
         return data.copy()
 
-    work = np.where(valid, np.power(10.0, np.clip(data, -60.0, 40.0) / 10.0), np.nan) if is_db else data
+    work = (
+        np.where(valid, np.power(10.0, np.clip(data, -60.0, 40.0) / 10.0), np.nan)
+        if is_db
+        else data
+    )
 
     if m == "boxcar":
         filtered = _nan_uniform_filter(work, size=ksize)
@@ -440,7 +437,11 @@ def compute_polygon_confidence(
     margin = min(1.0, max(0.0, (abs(float(mean_diff_db) - float(threshold_db)) + 1.0) / 5.0))
     area_score = min(1.0, math.log10(max(int(pixel_count), 1) + 1) / math.log10(101.0))
     orbit_weight = 1.0 if same_orbit is True else (0.35 if same_orbit is False else 0.65)
-    t_decay = 1.0 if temporal_days is None else max(0.3, 1.0 - max(0.0, float(temporal_days) - 12.0) / 120.0)
+    t_decay = (
+        1.0
+        if temporal_days is None
+        else max(0.3, 1.0 - max(0.0, float(temporal_days) - 12.0) / 120.0)
+    )
     vf = min(1.0, max(0.0, float(valid_fraction)))
     score = round(0.40 * margin + 0.25 * area_score + 0.20 * orbit_weight + 0.15 * vf * t_decay, 3)
     level = "High" if score >= 0.70 else ("Medium" if score >= 0.45 else "Low")
@@ -552,8 +553,7 @@ def export_geotiff(
         return {
             "success": False,
             "error": "rasterio not available for GeoTIFF export",
-            "note": "GeoTIFF export requires rasterio. "
-                    "Install with: pip install rasterio",
+            "note": "GeoTIFF export requires rasterio. " "Install with: pip install rasterio",
         }
     except Exception as e:
         logger.error("GeoTIFF export failed: %s", e)
@@ -612,17 +612,24 @@ def export_geojson(
             return {
                 "type": "FeatureCollection",
                 "features": [],
-                "metadata": {"threshold": threshold, "method": "backscatter_difference_flood", "total_pixels_checked": 0},
+                "metadata": {
+                    "threshold": threshold,
+                    "method": "backscatter_difference_flood",
+                    "total_pixels_checked": 0,
+                },
             }
 
         valid_mask = ~np.isnan(difference_mask)
         mode_l = (mode or "decrease").lower()
         if mode_l == "magnitude":
-            flood_mask = np.where(valid_mask, np.abs(difference_mask) > abs(float(threshold)), False)
+            flood_mask = np.where(
+                valid_mask, np.abs(difference_mask) > abs(float(threshold)), False
+            )
         elif mode_l == "both":
             flood_mask = np.where(
                 valid_mask,
-                (difference_mask < float(threshold)) | (np.abs(difference_mask) > abs(float(threshold))),
+                (difference_mask < float(threshold))
+                | (np.abs(difference_mask) > abs(float(threshold))),
                 False,
             )
         else:
@@ -672,7 +679,9 @@ def export_geojson(
             reproject = transformer.transform
 
         features = []
-        for geom_dict, comp_val in shapes(clean_labeled, mask=(clean_labeled > 0), transform=transform):
+        for geom_dict, comp_val in shapes(
+            clean_labeled, mask=(clean_labeled > 0), transform=transform
+        ):
             cid = int(comp_val)
             if cid <= 0:
                 continue
@@ -683,7 +692,9 @@ def export_geojson(
             min_diff = float(np.nanmin(comp_vals))
 
             if spacing_m and len(spacing_m) >= 2:
-                area_km2: Optional[float] = px_count * abs(float(spacing_m[0])) * abs(float(spacing_m[1])) / 1e6
+                area_km2: Optional[float] = (
+                    px_count * abs(float(spacing_m[0])) * abs(float(spacing_m[1])) / 1e6
+                )
             elif crs_norm != "EPSG:4326":
                 area_km2 = px_count * abs(float(transform.a)) * abs(float(transform.e)) / 1e6
             else:
@@ -708,20 +719,22 @@ def export_geojson(
                 valid_fraction=valid_fraction,
             )
 
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "threshold": threshold,
-                    "pixel_count": px_count,
-                    "area_km2": area_km2,
-                    "mean_difference_db": mean_diff,
-                    "min_difference_db": min_diff,
-                    "confidence_score": conf_score,
-                    "confidence_level": conf_level,
-                    "flood_indicator": True,
-                },
-                "geometry": mapping(geom),
-            })
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "threshold": threshold,
+                        "pixel_count": px_count,
+                        "area_km2": area_km2,
+                        "mean_difference_db": mean_diff,
+                        "min_difference_db": min_diff,
+                        "confidence_score": conf_score,
+                        "confidence_level": conf_level,
+                        "flood_indicator": True,
+                    },
+                    "geometry": mapping(geom),
+                }
+            )
 
         geojson = {
             "type": "FeatureCollection",

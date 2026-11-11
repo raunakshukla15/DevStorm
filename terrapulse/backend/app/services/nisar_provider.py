@@ -12,9 +12,8 @@ import math
 import os
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Iterator
-from pathlib import Path
 
 import earthaccess
 import numpy as np
@@ -27,21 +26,22 @@ MAX_WINDOW_PIXELS = 512
 class NISARDataProvider:
     """
     Abstract base class for NISAR data access.
-    
+
     Handles:
     - Earthdata authentication
     - Dataset searching and metadata retrieval
     - Geographic/temporal coverage checks
     - Observation retrieval with appropriate preprocessing
     """
-    
+
     def __init__(self) -> None:
         self._authenticated = False
-        self._s3_endpoint = os.getenv("NISAR_S3_ENDPOINT", 
-                                      "https://nisar.asf.earthdatacloud.nasa.gov/s3credentials")
+        self._s3_endpoint = os.getenv(
+            "NISAR_S3_ENDPOINT", "https://nisar.asf.earthdatacloud.nasa.gov/s3credentials"
+        )
         self._username = os.getenv("NASA_EARTHDATA_USERNAME")
         self._password = os.getenv("NASA_EARTHDATA_PASSWORD")
-        
+
     def authenticate(self) -> bool:
         """Authenticate with NASA Earthdata.
 
@@ -75,56 +75,58 @@ class NISARDataProvider:
             )
             self._authenticated = False
             return False
-    
+
     def is_authenticated(self) -> bool:
         """Check if provider is authenticated."""
         return self._authenticated
-    
+
     def search_datasets(
         self,
         short_name: str,
         temporal: Optional[Tuple[str, str]] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
-        **kwargs
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """
         Search for NISAR datasets.
-        
+
         Args:
             short_name: NISAR product short name (e.g., 'NISAR_L1B_RSLC')
             temporal: (start_date, end_date) in YYYY-MM-DD format
             bbox: (min_lon, min_lat, max_lon, max_lat)
             **kwargs: Additional earthsearch parameters
-            
+
         Returns:
             List of dataset metadata dicts
         """
         if not self.is_authenticated():
             if not self.authenticate():
                 raise RuntimeError("Could not authenticate with NASA Earthdata")
-        
+
         # Build search parameters
         search_kwargs = {
             "short_name": short_name,
             "cloud_hosted": True,
         }
-        
+
         if temporal:
             start_date, end_date = temporal
             search_kwargs["temporal"] = (start_date, end_date)
-        
+
         if bbox:
             min_lon, min_lat, max_lon, max_lat = bbox
             # earthaccess>=0.14 takes 4 positional args, not a list
             search_kwargs["bounding_box"] = (min_lon, min_lat, max_lon, max_lat)
-        
+
         # Add any additional kwargs
         search_kwargs.update(kwargs)
-        
+
         try:
-            logger.info(f"Searching NISAR datasets: short_name={short_name}, "
-                       f"temporal={temporal}, bbox={bbox}")
-            
+            logger.info(
+                f"Searching NISAR datasets: short_name={short_name}, "
+                f"temporal={temporal}, bbox={bbox}"
+            )
+
             results = earthaccess.search_data(**search_kwargs)
 
             datasets = []
@@ -132,14 +134,14 @@ class NISARDataProvider:
                 metadata = self._extract_metadata(result, short_name)
                 if metadata:
                     datasets.append(metadata)
-            
+
             logger.info(f"Found {len(datasets)} NISAR datasets")
             return datasets
-            
+
         except Exception as e:
             logger.error(f"NISAR dataset search failed: {e}")
             raise
-    
+
     def _extract_metadata(self, result, short_name: str) -> Optional[Dict[str, Any]]:
         """Extract standardized metadata from an earthaccess search result.
 
@@ -186,9 +188,11 @@ class NISARDataProvider:
                 rd = te.get("RangeDateTime", {}) or {}
                 temporal_begin = rd.get("BeginningDateTime") or te.get("SingleDateTime")
                 if temporal_begin:
-                    acquisition_date = datetime.fromisoformat(
-                        str(temporal_begin).replace("Z", "+00:00")
-                    ).date().isoformat()
+                    acquisition_date = (
+                        datetime.fromisoformat(str(temporal_begin).replace("Z", "+00:00"))
+                        .date()
+                        .isoformat()
+                    )
             except Exception:
                 pass
 
@@ -231,8 +235,12 @@ class NISARDataProvider:
                 for rel in umm.get("RelatedUrls") or []:
                     url = rel.get("URL") or ""
                     typ = str(rel.get("Type", "")).upper()
-                    if ("VISUALIZATION" in typ or "BROWSE" in typ or "PREVIEW" in typ
-                            or "browse" in url.lower()):
+                    if (
+                        "VISUALIZATION" in typ
+                        or "BROWSE" in typ
+                        or "PREVIEW" in typ
+                        or "browse" in url.lower()
+                    ):
                         browse_url = url
                         break
             except Exception:
@@ -270,7 +278,7 @@ class NISARDataProvider:
         except Exception as e:
             logger.warning(f"Failed to extract metadata from result: {e}")
             return None
-    
+
     def check_availability(
         self,
         lat: float,
@@ -278,11 +286,11 @@ class NISARDataProvider:
         start_date: str,
         end_date: str,
         short_name: str,
-        radius_km: float = 50.0
+        radius_km: float = 50.0,
     ) -> Dict[str, Any]:
         """
         Check NISAR data availability for a location and time range.
-        
+
         Args:
             lat: Latitude
             lon: Longitude
@@ -290,7 +298,7 @@ class NISARDataProvider:
             end_date: End date (YYYY-MM-DD)
             short_name: NISAR product short name
             radius_km: Search radius in km from the point
-            
+
         Returns:
             Availability result dict
         """
@@ -298,128 +306,122 @@ class NISARDataProvider:
             if not self.authenticate():
                 return {
                     "available": False,
-                    "error": "Authentication failed - cannot check data availability"
+                    "error": "Authentication failed - cannot check data availability",
                 }
-        
+
         try:
             # Search for data in the area and time range
-            bbox = [lon - radius_km/111.0, lat - radius_km/111.0, 
-                    lon + radius_km/111.0, lat + radius_km/111.0]
-            
+            bbox = [
+                lon - radius_km / 111.0,
+                lat - radius_km / 111.0,
+                lon + radius_km / 111.0,
+                lat + radius_km / 111.0,
+            ]
+
             datasets = self.search_datasets(
-                short_name=short_name,
-                temporal=(start_date, end_date),
-                bbox=bbox
+                short_name=short_name, temporal=(start_date, end_date), bbox=bbox
             )
-            
+
             if datasets:
-                # Return information about the first available dataset
-                dataset = datasets[0]
                 return {
                     "available": True,
                     "datasets": datasets,
-                    "note": f"Found {len(datasets)} NISAR datasets in the specified area and time range"
+                    "note": f"Found {len(datasets)} NISAR datasets in the specified area and time range",
                 }
             else:
                 return {
                     "available": False,
                     "note": "No NISAR data found for the specified location and time range. "
-                            "This could be due to: orbital coverage, data gaps, "
-                            "or the area being outside the swath coverage.",
-                    "data_qualifier": "No observations available"
+                    "This could be due to: orbital coverage, data gaps, "
+                    "or the area being outside the swath coverage.",
+                    "data_qualifier": "No observations available",
                 }
-                
+
         except Exception as e:
             logger.error(f"Availability check failed: {e}")
             return {
                 "available": False,
                 "error": str(e),
                 "note": "Error checking data availability. Please verify credentials "
-                        "and try again."
+                "and try again.",
             }
-    
+
     def get_observation(
-        self,
-        dataset_id: str,
-        s3_link: str,
-        https_link: str,
-        band: str = "HH"
+        self, dataset_id: str, s3_link: str, https_link: str, band: str = "HH"
     ) -> Optional[Dict[str, Any]]:
         """
         Retrieve and load a NISAR observation.
-        
+
         Args:
             dataset_id: Identifier for the dataset
             s3_link: Direct S3 access URL (if available)
             https_link: HTTPS access URL
             band: Polarization band (e.g., 'HH', 'HV', 'VV')
-            
+
         Returns:
             Observation dict with loaded data or None if failed
         """
         if not self.is_authenticated():
             if not self.authenticate():
                 return None
-        
+
         try:
             import xarray as xr
-            
+
             # Try S3 access first (if in us-west-2 and s3_link provided)
             if s3_link:
                 try:
-                    import boto3
                     import fsspec
-                    
+
                     # For S3 access, we need to be in us-west-2 or have temp credentials
-                    fs = fsspec.filesystem('https')
-                    nisar_file = fs.open(s3_link, mode='rb', 
-                                        client_kwargs={'auth': None})
-                    
+                    fs = fsspec.filesystem("https")
+                    nisar_file = fs.open(s3_link, mode="rb", client_kwargs={"auth": None})
+
                     # Try to open with h5netcdf
-                    ds = xr.open_dataset(nisar_file, engine='h5netcdf')
-                    
+                    ds = xr.open_dataset(nisar_file, engine="h5netcdf")
+
                     logger.info(f"Loaded NISAR observation via S3: {dataset_id}")
                     return {
                         "dataset_id": dataset_id,
                         "data": ds,
                         "source": "S3",
                         "band": band,
-                        "success": True
+                        "success": True,
                     }
-                    
+
                 except Exception as e:
                     logger.warning(f"S3 access failed, trying HTTPS: {e}")
-            
+
             # Fall back to HTTPS access
             if https_link:
                 import fsspec
-                
-                fs = fsspec.filesystem('https')
-                nisar_file = fs.open(https_link, mode='rb')
-                
-                ds = xr.open_dataset(nisar_file, engine='h5netcdf')
-                
+
+                fs = fsspec.filesystem("https")
+                nisar_file = fs.open(https_link, mode="rb")
+
+                ds = xr.open_dataset(nisar_file, engine="h5netcdf")
+
                 logger.info(f"Loaded NISAR observation via HTTPS: {dataset_id}")
                 return {
                     "dataset_id": dataset_id,
                     "data": ds,
                     "source": "HTTPS",
                     "band": band,
-                    "success": True
+                    "success": True,
                 }
-            
+
             logger.error(f"No access link available for {dataset_id}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Failed to load observation {dataset_id}: {e}")
             return {
                 "dataset_id": dataset_id,
                 "success": False,
                 "error": str(e),
-                "note": "Could not load observation. Check data access and format compatibility."
+                "note": "Could not load observation. Check data access and format compatibility.",
             }
-    
+
     @contextmanager
     def _open_gcov_grid(self, https_url: str) -> Iterator[Any]:
         """Open only the NISAR GCOV frequencyA grid group via authenticated HTTPS."""
@@ -463,9 +465,7 @@ class NISARDataProvider:
                     last_err = e
                     continue
             if ds is None:
-                raise RuntimeError(
-                    f"Could not open GCOV grid group in product: {last_err}"
-                )
+                raise RuntimeError(f"Could not open GCOV grid group in product: {last_err}")
             yield ds
         finally:
             try:
@@ -493,9 +493,7 @@ class NISARDataProvider:
             val = ds.attrs.get(attr_key)
             if val is not None:
                 return int(val)
-        raise RuntimeError(
-            "Could not determine projection EPSG code from GCOV grid group."
-        )
+        raise RuntimeError("Could not determine projection EPSG code from GCOV grid group.")
 
     @staticmethod
     def _select_pol_variable(ds: Any, band: str) -> str:
@@ -521,7 +519,8 @@ class NISARDataProvider:
             if band_up in c.upper():
                 return c
         non_aux = [
-            c for c in candidates
+            c
+            for c in candidates
             if c not in {"mask", "inputDataExceptionMask", "numberOfLooks", "rtcGammaToSigmaFactor"}
         ]
         return non_aux[0] if non_aux else candidates[0]
@@ -616,8 +615,26 @@ class NISARDataProvider:
 
                     west, south, east, north = (float(v) for v in bbox)
                     transformer = Transformer.from_crs("EPSG:4326", crs_str, always_xy=True)
-                    sample_lons = [west, east, west, east, 0.5 * (west + east), 0.5 * (west + east), west, east]
-                    sample_lats = [south, south, north, north, south, north, 0.5 * (south + north), 0.5 * (south + north)]
+                    sample_lons = [
+                        west,
+                        east,
+                        west,
+                        east,
+                        0.5 * (west + east),
+                        0.5 * (west + east),
+                        west,
+                        east,
+                    ]
+                    sample_lats = [
+                        south,
+                        south,
+                        north,
+                        north,
+                        south,
+                        north,
+                        0.5 * (south + north),
+                        0.5 * (south + north),
+                    ]
                     txs, tys = transformer.transform(sample_lons, sample_lats)
                     bx_min, bx_max = float(min(txs)), float(max(txs))
                     by_min, by_max = float(min(tys)), float(max(tys))
@@ -673,7 +690,9 @@ class NISARDataProvider:
                     hv_patch = ds[hv_var].isel(isel_map)
                     hh_vals = np.asarray(hh_patch.values, dtype=np.float64)
                     hv_vals = np.asarray(hv_patch.values, dtype=np.float64)
-                    valid = np.isfinite(hh_vals) & np.isfinite(hv_vals) & (hv_vals > 0) & (hh_vals > 0)
+                    valid = (
+                        np.isfinite(hh_vals) & np.isfinite(hv_vals) & (hv_vals > 0) & (hh_vals > 0)
+                    )
                     values = np.full(hh_vals.shape, np.nan, dtype=np.float64)
                     values[valid] = hh_vals[valid] / np.maximum(hv_vals[valid], 1e-12)
                 else:
@@ -691,7 +710,15 @@ class NISARDataProvider:
 
                 logger.info(
                     "Streamed %dx%d window (stride=%d) of '%s' at origin=(%d,%d) in %s (full %s) from %s",
-                    out_h, out_w, stride, chosen, r0, c0, crs_str, shape, https_url.split("/")[-1],
+                    out_h,
+                    out_w,
+                    stride,
+                    chosen,
+                    r0,
+                    c0,
+                    crs_str,
+                    shape,
+                    https_url.split("/")[-1],
                 )
                 return {
                     "values": values,
@@ -712,7 +739,9 @@ class NISARDataProvider:
         except Exception as e:
             raise RuntimeError(f"Windowed streaming failed: {e}")
 
-    def discover_nisar_collections(self, keyword: str = "NISAR", count: int = 50) -> List[Dict[str, Any]]:
+    def discover_nisar_collections(
+        self, keyword: str = "NISAR", count: int = 50
+    ) -> List[Dict[str, Any]]:
         """Query NASA CMR dynamically for published NISAR datasets."""
         if not self.is_authenticated() and not self.authenticate():
             raise RuntimeError("Earthdata authentication required to discover NISAR collections.")
@@ -742,19 +771,23 @@ class NISARDataProvider:
                 family = "L3 SME2 (Soil Moisture)"
             elif "GOFF" in sn_upper:
                 family = "L2 GOFF (Geocoded Pixel Offsets)"
-            elif "RSLC" in sn_upper or "RUNW" in sn_upper or "RIFG" in sn_upper or "ROFF" in sn_upper:
+            elif (
+                "RSLC" in sn_upper or "RUNW" in sn_upper or "RIFG" in sn_upper or "ROFF" in sn_upper
+            ):
                 family = "L1 Radar-Coordinate SAR/InSAR"
             else:
                 family = "NISAR Ancillary / Product"
-            out.append({
-                "short_name": short_name,
-                "version": version,
-                "title": entry_title,
-                "concept_id": meta.get("concept-id"),
-                "family": family,
-                "processing_level": (umm.get("ProcessingLevel") or {}).get("Id"),
-                "abstract": (umm.get("Abstract") or "")[:360],
-            })
+            out.append(
+                {
+                    "short_name": short_name,
+                    "version": version,
+                    "title": entry_title,
+                    "concept_id": meta.get("concept-id"),
+                    "family": family,
+                    "processing_level": (umm.get("ProcessingLevel") or {}).get("Id"),
+                    "abstract": (umm.get("Abstract") or "")[:360],
+                }
+            )
         out.sort(key=lambda c: c["short_name"])
         return out
 
@@ -807,7 +840,11 @@ class NISARDataProvider:
             if ds is None:
                 raise RuntimeError(f"Could not open GUNW interferogram group: {last_err}")
 
-            phase_var = "unwrappedPhase" if "unwrappedPhase" in ds else self._select_pol_variable(ds, "PHASE")
+            phase_var = (
+                "unwrappedPhase"
+                if "unwrappedPhase" in ds
+                else self._select_pol_variable(ds, "PHASE")
+            )
             da = ds[phase_var]
             shape = tuple(int(s) for s in da.shape)
             rows, cols = shape[-2], shape[-1]
@@ -821,8 +858,16 @@ class NISARDataProvider:
                 txs, tys = transformer.transform([bbox[0], bbox[2]], [bbox[1], bbox[3]])
                 x_idx = np.where((x_coords >= min(txs)) & (x_coords <= max(txs)))[0]
                 y_idx = np.where((y_coords >= min(tys)) & (y_coords <= max(tys)))[0]
-                c0, c1 = (int(x_idx.min()), int(x_idx.max()) + 1) if x_idx.size else (0, min(cols, req_window))
-                r0, r1 = (int(y_idx.min()), int(y_idx.max()) + 1) if y_idx.size else (0, min(rows, req_window))
+                c0, c1 = (
+                    (int(x_idx.min()), int(x_idx.max()) + 1)
+                    if x_idx.size
+                    else (0, min(cols, req_window))
+                )
+                r0, r1 = (
+                    (int(y_idx.min()), int(y_idx.max()) + 1)
+                    if y_idx.size
+                    else (0, min(rows, req_window))
+                )
             else:
                 tx, ty = transformer.transform(float(lon), float(lat))
                 cx = int(np.abs(x_coords - tx).argmin())
@@ -894,12 +939,15 @@ class NISARDataProvider:
                 "orbit": "Sun-synchronous, 12-day repeat",
             },
         }
-        
-        return product_info.get(short_name, {
-            "name": short_name,
-            "description": "NISAR product type",
-            "spatial_resolution": "~30 m",
-            "polarizations": ["HH", "HV", "VV"],
-            "product_type": "SAR",
-            "orbit": "Sun-synchronous",
-        })
+
+        return product_info.get(
+            short_name,
+            {
+                "name": short_name,
+                "description": "NISAR product type",
+                "spatial_resolution": "~30 m",
+                "polarizations": ["HH", "HV", "VV"],
+                "product_type": "SAR",
+                "orbit": "Sun-synchronous",
+            },
+        )

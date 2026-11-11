@@ -25,4 +25,6 @@ backend/data/
 # Testing & IDE
 .frontend/vscode/
 backend/.pytest_cache/
+backend/.coverage
 **/.pytest_cache/
+coverage.xml

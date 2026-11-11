@@ -2,7 +2,6 @@
 
 import numpy as np
 import xarray as xr
-import pytest
 
 from app.services.flood_analysis import (
     calculate_backscatter_difference,
@@ -95,7 +94,7 @@ class TestCompatibilityValidation:
 
         result = validate_observation_compatibility(before, after)
 
-        assert result["compatible"] == True
+        assert result["compatible"] is True
         assert len(result["warnings"]) == 0
 
     def test_incompatible_polarization(self):
@@ -109,7 +108,7 @@ class TestCompatibilityValidation:
 
         result = validate_observation_compatibility(before, after)
 
-        assert result["compatible"] == False
+        assert result["compatible"] is False
         assert len(result["warnings"]) > 0
 
     def test_incompatible_orbit(self):
@@ -123,7 +122,7 @@ class TestCompatibilityValidation:
 
         result = validate_observation_compatibility(before, after)
 
-        assert result["compatible"] == False
+        assert result["compatible"] is False
         assert len(result["warnings"]) > 0
 
     def test_missing_attributes(self):
@@ -167,6 +166,7 @@ class TestExportFunctions:
     def test_geojson_export_with_flood(self):
         """Test GeoJSON export with flood pixels."""
         import numpy as np
+
         # Create mask with flood in center
         difference_mask = np.zeros((10, 10), dtype=np.float64)
         difference_mask[4:6, 4:6] = -5.0  # Strong negative difference

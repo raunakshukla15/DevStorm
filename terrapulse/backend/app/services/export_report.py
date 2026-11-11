@@ -17,60 +17,72 @@ def build_job_csv(job: Dict[str, Any]) -> str:
     dates = res.get("actual_granule_dates") or {}
     loc = res.get("location") or {}
 
-    writer.writerow([
-        "job_id",
-        "hazard",
-        "lat",
-        "lon",
-        "before_date",
-        "after_date",
-        "mean_diff_db",
-        "std_diff_db",
-        "percentage_decrease",
-        "percentage_disturbed",
-        "affected_area_km2",
-        "confidence_level",
-        "confidence_score",
-    ])
+    writer.writerow(
+        [
+            "job_id",
+            "hazard",
+            "lat",
+            "lon",
+            "before_date",
+            "after_date",
+            "mean_diff_db",
+            "std_diff_db",
+            "percentage_decrease",
+            "percentage_disturbed",
+            "affected_area_km2",
+            "confidence_level",
+            "confidence_score",
+        ]
+    )
     conf = res.get("confidence") or {}
-    writer.writerow([
-        job.get("job_id"),
-        res.get("hazard"),
-        loc.get("lat"),
-        loc.get("lon"),
-        dates.get("before"),
-        dates.get("after"),
-        an.get("mean_backscatter_difference_db"),
-        an.get("std_difference_db"),
-        an.get("percentage_decrease"),
-        an.get("percentage_disturbed"),
-        an.get("affected_area_km2"),
-        conf.get("level") or conf.get("quality"),
-        conf.get("score"),
-    ])
+    writer.writerow(
+        [
+            job.get("job_id"),
+            res.get("hazard"),
+            loc.get("lat"),
+            loc.get("lon"),
+            dates.get("before"),
+            dates.get("after"),
+            an.get("mean_backscatter_difference_db"),
+            an.get("std_difference_db"),
+            an.get("percentage_decrease"),
+            an.get("percentage_disturbed"),
+            an.get("affected_area_km2"),
+            conf.get("level") or conf.get("quality"),
+            conf.get("score"),
+        ]
+    )
 
     writer.writerow([])
-    writer.writerow([
-        "feature_index",
-        "pixel_count",
-        "area_km2",
-        "mean_difference_db",
-        "min_difference_db",
-        "confidence_level",
-        "confidence_score",
-    ])
-    outlines = (res.get("results") or {}).get("flood_outlines") or (res.get("results") or {}).get("disturbance_outlines") or {}
+    writer.writerow(
+        [
+            "feature_index",
+            "pixel_count",
+            "area_km2",
+            "mean_difference_db",
+            "min_difference_db",
+            "confidence_level",
+            "confidence_score",
+        ]
+    )
+    outlines = (
+        (res.get("results") or {}).get("flood_outlines")
+        or (res.get("results") or {}).get("disturbance_outlines")
+        or {}
+    )
     for idx, feat in enumerate(outlines.get("features") or []):
         props = feat.get("properties") or {}
-        writer.writerow([
-            idx + 1,
-            props.get("pixel_count"),
-            props.get("area_km2"),
-            props.get("mean_difference_db"),
-            props.get("min_difference_db"),
-            props.get("confidence_level"),
-            props.get("confidence_score"),
-        ])
+        writer.writerow(
+            [
+                idx + 1,
+                props.get("pixel_count"),
+                props.get("area_km2"),
+                props.get("mean_difference_db"),
+                props.get("min_difference_db"),
+                props.get("confidence_level"),
+                props.get("confidence_score"),
+            ]
+        )
     return buf.getvalue()
 
 
@@ -107,7 +119,13 @@ def build_job_pdf(job: Dict[str, Any]) -> bytes:
     pdf.add_page()
 
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, _safe_txt(f"TerraPulse SAR Change Report - Job {job_id}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(
+        0,
+        10,
+        _safe_txt(f"TerraPulse SAR Change Report - Job {job_id}"),
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
 
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(

@@ -16,7 +16,9 @@ from app.services.flood_analysis import build_affine_from_coords, export_geotiff
 router = APIRouter(tags=["jobs"])
 
 
-@router.get("/analysis/jobs", response_model=List[JobSummaryOut], summary="List recent analysis jobs")
+@router.get(
+    "/analysis/jobs", response_model=List[JobSummaryOut], summary="List recent analysis jobs"
+)
 async def list_jobs(limit: int = Query(20, description="Max jobs, newest first")):
     """Job history for dashboards, event lists, alerts and reports."""
     ordered = db.list_jobs(limit=limit)
@@ -101,7 +103,9 @@ async def stream_job_progress(job_id: str):
 async def get_job_image(job_id: str, name: str):
     path = renders.load_job_image(job_id, name)
     if path is None:
-        raise HTTPException(status_code=404, detail=f"Image '{name}.png' not available for job '{job_id}'.")
+        raise HTTPException(
+            status_code=404, detail=f"Image '{name}.png' not available for job '{job_id}'."
+        )
     return FileResponse(str(path), media_type="image/png")
 
 
@@ -149,7 +153,9 @@ async def export_job(
             compress="LZW",
         )
         if not out.get("success"):
-            raise HTTPException(status_code=500, detail=out.get("error") or "GeoTIFF export failed.")
+            raise HTTPException(
+                status_code=500, detail=out.get("error") or "GeoTIFF export failed."
+            )
         return FileResponse(
             str(tif_path),
             media_type="image/tiff",
@@ -167,7 +173,9 @@ async def export_job(
     if fmt == "png":
         png_path = renders.load_job_image(job_id, "difference")
         if png_path is None:
-            raise HTTPException(status_code=404, detail=f"No PNG image rendered for job '{job_id}'.")
+            raise HTTPException(
+                status_code=404, detail=f"No PNG image rendered for job '{job_id}'."
+            )
         return FileResponse(
             str(png_path),
             media_type="image/png",
@@ -179,7 +187,9 @@ async def export_job(
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="terrapulse-{job_id}-report.pdf"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="terrapulse-{job_id}-report.pdf"'
+            },
         )
 
     raise HTTPException(status_code=400, detail=f"Unsupported export format '{format}'.")

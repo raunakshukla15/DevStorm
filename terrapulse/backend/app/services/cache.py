@@ -44,16 +44,18 @@ def cached_search(
     bbox: List[float],
     count: int = 20,
 ) -> List[Dict[str, Any]]:
-    key = str((
-        short_name,
-        temporal[0],
-        temporal[1],
-        round(bbox[0], 2),
-        round(bbox[1], 2),
-        round(bbox[2], 2),
-        round(bbox[3], 2),
-        count,
-    ))
+    key = str(
+        (
+            short_name,
+            temporal[0],
+            temporal[1],
+            round(bbox[0], 2),
+            round(bbox[1], 2),
+            round(bbox[2], 2),
+            round(bbox[3], 2),
+            count,
+        )
+    )
     with cache_lock:
         hit = search_cache.get(key)
     if hit is not None:

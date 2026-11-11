@@ -14,9 +14,13 @@ from app.services.job_runner import parse_granule_date, summarize_granule
 router = APIRouter(tags=["events"])
 
 
-@router.get("/events/live", response_model=LiveEventsResponse, summary="Live USGS & NASA EONET events")
+@router.get(
+    "/events/live", response_model=LiveEventsResponse, summary="Live USGS & NASA EONET events"
+)
 async def get_live_events(
-    hazard: Optional[str] = Query(None, description="Optional hazard filter (earthquake, flood, wildfire, volcano, storm)"),
+    hazard: Optional[str] = Query(
+        None, description="Optional hazard filter (earthquake, flood, wildfire, volcano, storm)"
+    ),
 ):
     events, warnings = await fetch_live_events(hazard=hazard)
     return LiveEventsResponse(events=events, warnings=warnings)
@@ -77,7 +81,13 @@ async def match_nisar_for_event(
         "short_name": used_sn,
         "pre_event_granule": GranuleSummaryOut(**pre) if pre else None,
         "post_event_granule": GranuleSummaryOut(**post) if post else None,
-        "suggested_before_date": pre.get("acquisition_date") if pre else (ev_dt - timedelta(days=12)).strftime("%Y-%m-%d"),
-        "suggested_after_date": post.get("acquisition_date") if post else datetime.now().strftime("%Y-%m-%d"),
+        "suggested_before_date": (
+            pre.get("acquisition_date")
+            if pre
+            else (ev_dt - timedelta(days=12)).strftime("%Y-%m-%d")
+        ),
+        "suggested_after_date": (
+            post.get("acquisition_date") if post else datetime.now().strftime("%Y-%m-%d")
+        ),
         "has_both_passes": bool(pre and post),
     }
