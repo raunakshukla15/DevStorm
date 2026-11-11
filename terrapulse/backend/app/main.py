@@ -1,4 +1,5 @@
 import os
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -27,6 +28,10 @@ async def lifespan(_app: FastAPI):
     init_db()
     prune_expired_jobs(ttl_days=int(os.getenv("JOB_TTL_DAYS", "30")))
     start_watchlist_scheduler()
+    if not os.getenv("PYTEST_CURRENT_TEST") and os.getenv("DISABLE_WARMUP", "") != "1":
+        from app.services.cache import warm_startup_caches
+
+        threading.Thread(target=warm_startup_caches, daemon=True).start()
     try:
         yield
     finally:

@@ -1,5 +1,6 @@
 """Monitoring regions and supported NISAR dataset metadata routes."""
 
+import asyncio
 import logging
 from typing import List
 from fastapi import APIRouter
@@ -104,7 +105,7 @@ async def discover_datasets():
     """Query NASA Earthdata CMR dynamically for published NISAR collections."""
     provider = cache.get_provider()
     try:
-        cols = provider.discover_nisar_collections(keyword="NISAR", count=50)
+        cols = await asyncio.to_thread(cache.cached_discover_collections, provider, "NISAR", 50)
     except Exception as e:
         logger.warning("CMR discovery failed: %s", e)
         return []

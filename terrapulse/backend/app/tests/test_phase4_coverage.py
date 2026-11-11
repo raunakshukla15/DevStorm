@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 
 from app import db
-from app.services import alerts_worker, event_feeds, job_runner, masks, timeseries
+from app.services import alerts_worker, cache, event_feeds, job_runner, masks, timeseries
 from app.services.nisar_provider import NISARDataProvider
 
 
@@ -460,3 +460,34 @@ def test_alerts_worker_smtp_scheduler_masks_timeseries_and_pruning(tmp_path, mon
     assert pruned == 1
     assert db.get_job("old_job") is None
     assert db.get_job("fresh_job") is not None
+
+
+def test_collections_cache_and_startup_warmup():
+    calls = {"discover": 0, "search": 0}
+
+    class WarmProvider:
+        def is_authenticated(self):
+            return True
+
+        def authenticate(self):
+            return True
+
+        def discover_nisar_collections(self, keyword="NISAR", count=50):
+            calls["discover"] += 1
+            return [{"short_name": "NISAR_L2_GCOV_PROVISIONAL_V1", "version": "1", "title": "GCOV"}]
+
+        def search_datasets(self, short_name, temporal=None, bbox=None, count=20):
+            calls["search"] += 1
+            return []
+
+    cache.collections_cache.clear()
+    cache.search_cache.clear()
+    prov = WarmProvider()
+    with patch("app.services.cache.get_provider", return_value=prov):
+        cache.warm_startup_caches()
+        first = cache.cached_discover_collections(prov, keyword="NISAR", count=50)
+        second = cache.cached_discover_collections(prov, keyword="NISAR", count=50)
+    assert len(first) == 1
+    assert second == first
+    assert calls["discover"] == 1
+    assert calls["search"] >= 2

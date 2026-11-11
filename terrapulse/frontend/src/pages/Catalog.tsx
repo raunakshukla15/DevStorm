@@ -27,7 +27,9 @@ export default function Catalog() {
         endDate: submitted.end,
       }),
     enabled: tab !== 'sband' && tab !== 'collections',
-    retry: 1,
+    staleTime: 300000,
+    gcTime: 900000,
+    retry: 0,
   })
 
   const collectionsQuery = useQuery({
@@ -35,6 +37,8 @@ export default function Catalog() {
     queryFn: discoverNisarCollections,
     enabled: tab === 'collections',
     staleTime: 300000,
+    gcTime: 900000,
+    retry: 0,
   })
 
   const levelOf = (sn: string) =>

@@ -17,6 +17,7 @@ GEOCODE_CACHE_TTL = 3600.0
 
 cache_lock = threading.Lock()
 search_cache: TTLCache = TTLCache(maxsize=256, ttl=SEARCH_CACHE_TTL)
+collections_cache: TTLCache = TTLCache(maxsize=16, ttl=SEARCH_CACHE_TTL)
 window_cache: TTLCache = TTLCache(maxsize=64, ttl=WINDOW_CACHE_TTL)
 geocode_cache: TTLCache = TTLCache(maxsize=256, ttl=GEOCODE_CACHE_TTL)
 geocode_lock = asyncio.Lock()
@@ -102,3 +103,44 @@ def cached_window(
     with cache_lock:
         window_cache[cache_key] = values
     return values
+
+
+def cached_discover_collections(
+    provider: NISARDataProvider,
+    keyword: str = "NISAR",
+    count: int = 50,
+) -> List[Dict[str, Any]]:
+    key = f"{keyword}:{count}"
+    with cache_lock:
+        hit = collections_cache.get(key)
+    if hit is not None:
+        return hit
+    cols = provider.discover_nisar_collections(keyword=keyword, count=count)
+    with cache_lock:
+        collections_cache[key] = cols
+    return cols
+
+
+def warm_startup_caches() -> None:
+    """Authenticate and pre-warm default Data Catalog CMR searches in background."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services.hazards import SHORT_NAME_CANDIDATES
+
+    try:
+        provider = get_provider()
+        if not provider.is_authenticated() and not provider.authenticate():
+            return
+        w = 60.0 / 111.0
+        amazon_bbox = [-52.0 - w, -1.5 - w, -52.0 + w, -1.5 + w]
+        temporal = ("2026-08-01", "2026-11-15")
+        warm_sns = list(SHORT_NAME_CANDIDATES.get("nisar_l2_gcov", [])) + list(
+            SHORT_NAME_CANDIDATES.get("nisar_l2_gunw", [])
+        )
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            pool.submit(cached_discover_collections, provider, "NISAR", 50)
+            for sn in warm_sns:
+                pool.submit(cached_search, provider, sn, temporal, amazon_bbox, 20)
+        logger.info("Startup CMR catalog warm-up complete.")
+    except Exception as e:
+        logger.debug("Startup CMR warm-up skipped: %s", e)

@@ -11,6 +11,7 @@ Follows the provider abstraction pattern defined in the project spec.
 import math
 import os
 import logging
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Iterator
@@ -36,6 +37,7 @@ class NISARDataProvider:
 
     def __init__(self) -> None:
         self._authenticated = False
+        self._auth_lock = threading.Lock()
         self._s3_endpoint = os.getenv(
             "NISAR_S3_ENDPOINT", "https://nisar.asf.earthdatacloud.nasa.gov/s3credentials"
         )
@@ -53,28 +55,31 @@ class NISARDataProvider:
         """
         import os as _os
 
-        try:
-            if self._username and self._password:
-                _os.environ["EARTHDATA_USERNAME"] = self._username
-                _os.environ["EARTHDATA_PASSWORD"] = self._password
-            # Non-interactive only: never strategy="all"/"interactive", which
-            # prompts on stdin and would hang the server request indefinitely.
+        with self._auth_lock:
+            if self._authenticated:
+                return True
             try:
-                earthaccess.login(strategy="environment")
-            except Exception:
-                # Fall back to an existing .netrc if present
-                earthaccess.login(strategy="netrc")
-            self._authenticated = True
-            logger.info("Successfully authenticated with NASA Earthdata")
-            return True
-        except Exception as e:
-            logger.warning(
-                "Earthdata authentication failed (set NASA_EARTHDATA_USERNAME / "
-                "NASA_EARTHDATA_PASSWORD in backend/.env). %s",
-                e,
-            )
-            self._authenticated = False
-            return False
+                if self._username and self._password:
+                    _os.environ["EARTHDATA_USERNAME"] = self._username
+                    _os.environ["EARTHDATA_PASSWORD"] = self._password
+                # Non-interactive only: never strategy="all"/"interactive", which
+                # prompts on stdin and would hang the server request indefinitely.
+                try:
+                    earthaccess.login(strategy="environment")
+                except Exception:
+                    # Fall back to an existing .netrc if present
+                    earthaccess.login(strategy="netrc")
+                self._authenticated = True
+                logger.info("Successfully authenticated with NASA Earthdata")
+                return True
+            except Exception as e:
+                logger.warning(
+                    "Earthdata authentication failed (set NASA_EARTHDATA_USERNAME / "
+                    "NASA_EARTHDATA_PASSWORD in backend/.env). %s",
+                    e,
+                )
+                self._authenticated = False
+                return False
 
     def is_authenticated(self) -> bool:
         """Check if provider is authenticated."""

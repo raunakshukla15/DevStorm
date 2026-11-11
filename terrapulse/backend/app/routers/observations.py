@@ -42,7 +42,7 @@ async def get_observations(
         return []
 
     provider = cache.get_provider()
-    if not provider.is_authenticated() and not provider.authenticate():
+    if not provider.is_authenticated() and not await asyncio.to_thread(provider.authenticate):
         raise HTTPException(
             status_code=401,
             detail=(
@@ -55,29 +55,39 @@ async def get_observations(
     bbox = [lon - window, lat - window, lon + window, lat + window]
     temporal = (start_date, end_date) if (start_date and end_date) else ("2026-01-01", "2026-12-31")
 
+    short_names = resolve_short_names(dataset_id)
+    batches = await asyncio.gather(
+        *(
+            asyncio.to_thread(cache.cached_search, provider, sn, temporal, bbox, 20)
+            for sn in short_names
+        ),
+        return_exceptions=True,
+    )
+
     found: List[ObservationItemOut] = []
     errors: List[str] = []
-    for sn in resolve_short_names(dataset_id):
-        try:
-            for g in cache.cached_search(provider, sn, temporal, bbox, count=20):
-                found.append(
-                    ObservationItemOut(
-                        id=g.get("id"),
-                        title=g.get("title"),
-                        short_name=g.get("short_name"),
-                        dataset_id=dataset_id,
-                        acquisition_date=g.get("acquisition_date"),
-                        orbit_direction=g.get("orbit_direction") or "unknown",
-                        location=LocationPoint(lat=lat, lon=lon),
-                        bounding_box=g.get("bounding_box"),
-                        https_url=g.get("https_link"),
-                        s3_url=g.get("s3_link"),
-                    )
+    for sn, batch in zip(short_names, batches):
+        if isinstance(batch, Exception):
+            errors.append(f"{sn}: {batch}")
+            continue
+        if not batch:
+            continue
+        for g in batch:
+            found.append(
+                ObservationItemOut(
+                    id=g.get("id"),
+                    title=g.get("title"),
+                    short_name=g.get("short_name"),
+                    dataset_id=dataset_id,
+                    acquisition_date=g.get("acquisition_date"),
+                    orbit_direction=g.get("orbit_direction") or "unknown",
+                    location=LocationPoint(lat=lat, lon=lon),
+                    bounding_box=g.get("bounding_box"),
+                    https_url=g.get("https_link"),
+                    s3_url=g.get("s3_link"),
                 )
-            if found:
-                break
-        except Exception as e:
-            errors.append(f"{sn}: {e}")
+            )
+        break
     if not found and errors:
         raise HTTPException(status_code=502, detail="CMR search failed: " + "; ".join(errors))
     logger.info("Found %d live observations for %s", len(found), dataset_id)
@@ -98,7 +108,7 @@ async def check_availability(
 ):
     """Check live NISAR granule availability for an area and time range."""
     provider = cache.get_provider()
-    if not provider.is_authenticated() and not provider.authenticate():
+    if not provider.is_authenticated() and not await asyncio.to_thread(provider.authenticate):
         raise HTTPException(
             status_code=401,
             detail=(
@@ -107,17 +117,24 @@ async def check_availability(
             ),
         )
 
-    for sn in resolve_short_names(dataset_id or "nisar_l2_gcov"):
-        try:
-            result = provider.check_availability(
+    short_names = resolve_short_names(dataset_id or "nisar_l2_gcov")
+    checks = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                provider.check_availability,
                 lat=lat,
                 lon=lon,
                 start_date=start_date,
                 end_date=end_date,
                 short_name=sn,
             )
-        except Exception as e:
-            logger.warning("Availability check failed for %s: %s", sn, e)
+            for sn in short_names
+        ),
+        return_exceptions=True,
+    )
+    for sn, result in zip(short_names, checks):
+        if isinstance(result, Exception):
+            logger.warning("Availability check failed for %s: %s", sn, result)
             continue
         if result.get("available"):
             return AvailabilityResponse(
