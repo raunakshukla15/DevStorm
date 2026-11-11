@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import { fetchAois } from '../api/aois'
 import { fetchAuthStatus } from '../api/auth'
 import { fetchAlerts, fetchWatchlist } from '../api/watchlist'
+import { AvatarPresetDrawing, AvatarToneDrawing } from '../components/AvatarDrawing'
 import { Card } from '../components/Card'
 import { SevBadge } from '../components/SevBadge'
 import { UserAvatar } from '../components/UserAvatar'
@@ -374,7 +375,6 @@ export default function Profile() {
             {profile.avatarKind === 'preset' && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
                 {AVATAR_PRESETS.map((preset) => {
-                  const Icon = preset.icon
                   const selected = profile.avatarPreset === preset.id
                   return (
                     <button
@@ -392,8 +392,11 @@ export default function Profile() {
                           <Check size={10} />
                         </span>
                       )}
-                      <span className="w-9 h-9 rounded-full bg-[#080f1d] border border-white/15 flex items-center justify-center mb-2 text-cyan-300">
-                        <Icon size={18} />
+                      <span
+                        style={{ backgroundImage: 'linear-gradient(135deg, #0d1a33 0%, #070e1c 100%)' }}
+                        className="w-10 h-10 rounded-full bg-[#080f1d] border border-white/20 tp-keep-white flex items-center justify-center mb-2 shadow-inner"
+                      >
+                        <AvatarPresetDrawing preset={preset.id} size={24} palette="medallion" />
                       </span>
                       <div className="text-xs font-semibold text-white">{preset.label}</div>
                       <div className="text-[11px] text-white/50">{preset.subtitle}</div>
@@ -493,8 +496,10 @@ export default function Profile() {
                           backgroundColor: tone.backgroundColor,
                           backgroundImage: tone.gradientCss,
                         }}
-                        className={`w-4 h-4 rounded-full ${tone.swatchClass} border border-white/30`}
-                      />
+                        className={`w-6 h-6 rounded-full ${tone.swatchClass} border border-white/30 inline-flex items-center justify-center shrink-0 tp-keep-white shadow-sm`}
+                      >
+                        <AvatarToneDrawing tone={tone.id} size={15} />
+                      </span>
                       <span>{tone.label}</span>
                     </button>
                   )

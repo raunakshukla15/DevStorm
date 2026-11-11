@@ -1,5 +1,6 @@
 import type { OperatorProfile } from '../store/usePrefsStore'
 import { AVATAR_TONES, computeInitials, getAvatarPresetMeta } from '../utils/avatar'
+import { AvatarPresetDrawing } from './AvatarDrawing'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 
@@ -45,13 +46,12 @@ export function UserAvatar({
 
   if (profile.avatarKind === 'preset') {
     const preset = getAvatarPresetMeta(profile.avatarPreset)
-    const Icon = preset.icon
     return (
       <span
         style={badgeStyle}
         className={`${dims.box} ${tone.bgClass} tp-avatar rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white border border-white/30 shadow-sm select-none ${className}`}
       >
-        <Icon size={dims.icon} strokeWidth={2.1} aria-hidden="true" />
+        <AvatarPresetDrawing preset={preset.id} size={Math.round(dims.icon * 1.15)} palette="badge" />
       </span>
     )
   }

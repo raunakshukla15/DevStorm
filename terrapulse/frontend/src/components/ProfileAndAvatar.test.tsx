@@ -127,11 +127,17 @@ describe('ProfileMenu header interaction', () => {
     fireEvent.click(screen.getByRole('button', { name: /Choose Orbital Pass avatar/i }))
     expect(usePrefsStore.getState().profile.avatarKind).toBe('preset')
     expect(usePrefsStore.getState().profile.avatarPreset).toBe('satellite')
+    expect(trigger.querySelector('svg[data-drawing="preset-satellite"]')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Select Geo Emerald badge tone/i }))
     expect(usePrefsStore.getState().profile.avatarTone).toBe('emerald')
     const updatedBadge = trigger.querySelector('.tp-avatar') as HTMLElement | null
     expect(updatedBadge?.style.backgroundColor).toBe('rgb(5, 150, 105)')
+    expect(
+      screen
+        .getByRole('button', { name: /Select Geo Emerald badge tone/i })
+        .querySelector('svg[data-drawing="tone-emerald"]'),
+    ).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Switch to Light High-Contrast Theme/i }))
     expect(usePrefsStore.getState().prefs.theme).toBe('light')
@@ -159,11 +165,15 @@ describe('Profile page avatar choice and details editor', () => {
     renderWithProviders(<Profile />, '/profile')
 
     fireEvent.click(screen.getByRole('button', { name: 'Icon Avatars' }))
-    fireEvent.click(screen.getByRole('button', { name: /L-Band SAR/i }))
+    const radarPresetBtn = screen.getByRole('button', { name: /L-Band SAR/i })
+    expect(radarPresetBtn.querySelector('svg[data-drawing="preset-radar"]')).not.toBeNull()
+    fireEvent.click(radarPresetBtn)
     expect(usePrefsStore.getState().profile.avatarKind).toBe('preset')
     expect(usePrefsStore.getState().profile.avatarPreset).toBe('radar')
 
-    fireEvent.click(screen.getByRole('button', { name: /Select Radar Violet avatar color/i }))
+    const violetToneBtn = screen.getByRole('button', { name: /Select Radar Violet avatar color/i })
+    expect(violetToneBtn.querySelector('svg[data-drawing="tone-violet"]')).not.toBeNull()
+    fireEvent.click(violetToneBtn)
     expect(usePrefsStore.getState().profile.avatarTone).toBe('violet')
 
     const nameInput = screen.getByLabelText('Display Name')

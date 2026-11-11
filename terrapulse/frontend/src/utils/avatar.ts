@@ -1,32 +1,20 @@
-import {
-  Compass,
-  Flame,
-  Globe2,
-  Mountain,
-  Radar,
-  Satellite,
-  ShieldCheck,
-  Waves,
-  type LucideIcon,
-} from 'lucide-react'
 import type { AvatarPresetId, AvatarToneId } from '../store/usePrefsStore'
 
 export interface AvatarPresetMeta {
   id: AvatarPresetId
   label: string
   subtitle: string
-  icon: LucideIcon
 }
 
 export const AVATAR_PRESETS: AvatarPresetMeta[] = [
-  { id: 'satellite', label: 'Orbital Pass', subtitle: 'NISAR mission badge', icon: Satellite },
-  { id: 'globe', label: 'Earth Watch', subtitle: 'Global monitoring', icon: Globe2 },
-  { id: 'radar', label: 'L-Band SAR', subtitle: 'Coherence & backscatter', icon: Radar },
-  { id: 'waves', label: 'Hydrology', subtitle: 'Flood & coastal extent', icon: Waves },
-  { id: 'compass', label: 'Field Survey', subtitle: 'Geolocation & AOIs', icon: Compass },
-  { id: 'mountain', label: 'Terrain', subtitle: 'Landslides & quakes', icon: Mountain },
-  { id: 'flame', label: 'Thermal', subtitle: 'Volcanic activity', icon: Flame },
-  { id: 'shield', label: 'Mission Ops', subtitle: 'Watchlist & alerts', icon: ShieldCheck },
+  { id: 'satellite', label: 'Orbital Pass', subtitle: 'NISAR mission badge' },
+  { id: 'globe', label: 'Earth Watch', subtitle: 'Global monitoring' },
+  { id: 'radar', label: 'L-Band SAR', subtitle: 'Coherence & backscatter' },
+  { id: 'waves', label: 'Hydrology', subtitle: 'Flood & coastal extent' },
+  { id: 'compass', label: 'Field Survey', subtitle: 'Geolocation & AOIs' },
+  { id: 'mountain', label: 'Terrain', subtitle: 'Landslides & quakes' },
+  { id: 'flame', label: 'Thermal', subtitle: 'Volcanic activity' },
+  { id: 'shield', label: 'Mission Ops', subtitle: 'Watchlist & alerts' },
 ]
 
 export interface AvatarToneMeta {

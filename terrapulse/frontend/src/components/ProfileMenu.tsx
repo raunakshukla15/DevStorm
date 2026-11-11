@@ -18,6 +18,7 @@ import { useBackendStatus } from '../hooks/useBackendStatus'
 import { useJobs } from '../hooks/useJobs'
 import { usePrefsStore } from '../store/usePrefsStore'
 import { AVATAR_PRESETS, AVATAR_TONE_LIST, computeInitials } from '../utils/avatar'
+import { AvatarPresetDrawing, AvatarToneDrawing } from './AvatarDrawing'
 import { UserAvatar } from './UserAvatar'
 
 const QUICK_PRESET_IDS = ['satellite', 'globe', 'radar', 'waves', 'compass'] as const
@@ -231,7 +232,6 @@ export function ProfileMenu() {
               </button>
 
               {quickPresets.map((preset) => {
-                const Icon = preset.icon
                 const active = profile.avatarKind === 'preset' && profile.avatarPreset === preset.id
                 return (
                   <button
@@ -246,7 +246,7 @@ export function ProfileMenu() {
                         : 'border-white/15 bg-white/5 text-white/75 hover:border-white/35'
                     }`}
                   >
-                    <Icon size={15} />
+                    <AvatarPresetDrawing preset={preset.id} size={18} palette="medallion" />
                   </button>
                 )
               })}
@@ -288,10 +288,12 @@ export function ProfileMenu() {
                           backgroundColor: tone.backgroundColor,
                           backgroundImage: tone.gradientCss,
                         }}
-                        className={`w-4 h-4 rounded-full ${tone.swatchClass} border border-white/30 transition-transform cursor-pointer ${
-                          selected ? 'ring-2 ring-white scale-110' : 'opacity-80 hover:opacity-100'
+                        className={`w-5 h-5 rounded-full ${tone.swatchClass} border border-white/30 inline-flex items-center justify-center tp-keep-white transition-transform cursor-pointer ${
+                          selected ? 'ring-2 ring-white scale-110' : 'opacity-85 hover:opacity-100'
                         }`}
-                      />
+                      >
+                        <AvatarToneDrawing tone={tone.id} size={12} />
+                      </button>
                   )
                 })}
               </div>
