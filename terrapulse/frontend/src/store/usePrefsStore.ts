@@ -2,6 +2,40 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AnalysisResult } from '../types/api'
 
+export type AvatarKind = 'initials' | 'preset' | 'photo'
+
+export type AvatarPresetId =
+  | 'satellite'
+  | 'globe'
+  | 'radar'
+  | 'waves'
+  | 'compass'
+  | 'mountain'
+  | 'flame'
+  | 'shield'
+
+export type AvatarToneId =
+  | 'ocean'
+  | 'cyan'
+  | 'emerald'
+  | 'amber'
+  | 'violet'
+  | 'slate'
+
+export interface OperatorProfile {
+  displayName: string
+  role: string
+  organization: string
+  email: string
+  bio: string
+  avatarKind: AvatarKind
+  avatarPreset: AvatarPresetId
+  avatarTone: AvatarToneId
+  avatarCustomInitials: string
+  avatarPhotoDataUrl: string | null
+  updatedAt: string
+}
+
 export interface UserPrefs {
   defaultHazard: string
   autoDates: boolean
@@ -14,14 +48,17 @@ export interface UserPrefs {
 
 interface PrefsState {
   prefs: UserPrefs
+  profile: OperatorProfile
   viewedIds: string[]
   lastResult: AnalysisResult | null
   setPrefs: (next: Partial<UserPrefs>) => void
+  setProfile: (next: Partial<OperatorProfile>) => void
+  resetProfile: () => void
   markViewed: (jobId: string) => void
   setLastResult: (result: AnalysisResult | null) => void
 }
 
-const DEFAULT_PREFS: UserPrefs = {
+export const DEFAULT_PREFS: UserPrefs = {
   defaultHazard: 'flood',
   autoDates: true,
   defaultRegion: 'amazon',
@@ -31,16 +68,46 @@ const DEFAULT_PREFS: UserPrefs = {
   powerUnit: 'db',
 }
 
+export const DEFAULT_PROFILE: OperatorProfile = {
+  displayName: 'Researcher',
+  role: 'SAR Earth Observation Analyst',
+  organization: 'TerraPulse Workspace',
+  email: '',
+  bio: '',
+  avatarKind: 'initials',
+  avatarPreset: 'satellite',
+  avatarTone: 'ocean',
+  avatarCustomInitials: '',
+  avatarPhotoDataUrl: null,
+  updatedAt: '',
+}
+
 export const usePrefsStore = create<PrefsState>()(
   persist(
     (set) => ({
       prefs: DEFAULT_PREFS,
+      profile: DEFAULT_PROFILE,
       viewedIds: [],
       lastResult: null,
       setPrefs: (next) =>
         set((state) => ({
           prefs: { ...state.prefs, ...next },
         })),
+      setProfile: (next) =>
+        set((state) => ({
+          profile: {
+            ...state.profile,
+            ...next,
+            updatedAt: next.updatedAt ?? new Date().toISOString(),
+          },
+        })),
+      resetProfile: () =>
+        set({
+          profile: {
+            ...DEFAULT_PROFILE,
+            updatedAt: new Date().toISOString(),
+          },
+        }),
       markViewed: (jobId) =>
         set((state) =>
           state.viewedIds.includes(jobId)
@@ -51,6 +118,22 @@ export const usePrefsStore = create<PrefsState>()(
     }),
     {
       name: 'terrapulse:prefs-store',
+      merge: (persistedState, currentState) => {
+        const persisted = (persistedState as Partial<PrefsState> | undefined) ?? {}
+        return {
+          ...currentState,
+          ...persisted,
+          prefs: {
+            ...DEFAULT_PREFS,
+            ...(persisted.prefs ?? {}),
+          },
+          profile: {
+            ...DEFAULT_PROFILE,
+            ...(persisted.profile ?? {}),
+          },
+          viewedIds: Array.isArray(persisted.viewedIds) ? persisted.viewedIds : [],
+        }
+      },
     },
   ),
 )

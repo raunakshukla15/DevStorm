@@ -1,14 +1,25 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { fetchAuthStatus } from '../api/auth'
 import { Card } from '../components/Card'
+import { UserAvatar } from '../components/UserAvatar'
 import { usePrefsStore } from '../store/usePrefsStore'
 import { HAZARDS, REGIONS } from '../utils/geo'
 
+const SETTINGS_TABS = new Set(['sources', 'processing', 'account', 'preferences'])
+
 export default function Settings() {
-  const [tab, setTab] = useState('sources')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const requestedTab = searchParams.get('tab')
+  const tab = requestedTab && SETTINGS_TABS.has(requestedTab) ? requestedTab : 'sources'
   const prefs = usePrefsStore((s) => s.prefs)
   const setPrefs = usePrefsStore((s) => s.setPrefs)
+  const profile = usePrefsStore((s) => s.profile)
+
+  const selectTab = (next: string) => {
+    setSearchParams({ tab: next }, { replace: true })
+  }
 
   const authQuery = useQuery({
     queryKey: ['auth-status'],
@@ -33,9 +44,9 @@ export default function Settings() {
           <button
             type="button"
             key={id}
-            onClick={() => setTab(id)}
+            onClick={() => selectTab(id)}
             className={`text-sm rounded-lg px-4 py-1.5 ${
-              tab === id ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/65'
+              tab === id ? 'bg-blue-600 text-white tp-keep-white' : 'bg-white/5 text-white/65'
             }`}
           >
             {label}
@@ -94,20 +105,45 @@ export default function Settings() {
         </Card>
       )}
       {tab === 'account' && (
-        <Card title="Account">
-          <p>
-            Earthdata credentials live only in <span className="text-white">backend/.env</span> on this
-            machine — never in the app or git.
-          </p>
-          <p className="text-xs">
-            Configured:{' '}
-            {auth
-              ? auth.connected
-                ? 'yes (verified just now)'
-                : 'no / invalid — see note above'
-              : 'checking…'}
-          </p>
-        </Card>
+        <div className="grid md:grid-cols-2 gap-4">
+          <Card title="Operator Profile &amp; Avatar">
+            <div className="flex items-center gap-3 pb-1">
+              <UserAvatar profile={profile} size="md" />
+              <div className="min-w-0">
+                <div className="font-semibold text-white truncate">
+                  {profile.displayName || 'Researcher'}
+                </div>
+                <div className="text-xs text-white/60 truncate">
+                  {profile.role || 'SAR Earth Observation Analyst'}
+                </div>
+              </div>
+            </div>
+            {profile.organization && (
+              <p className="text-xs text-white/55">Workspace: {profile.organization}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate('/profile')}
+              className="text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white tp-keep-white px-3.5 py-1.5 cursor-pointer"
+            >
+              Open Profile &amp; Avatar Studio
+            </button>
+          </Card>
+          <Card title="NASA Earthdata Account">
+            <p>
+              Earthdata credentials live only in <span className="text-white">backend/.env</span> on this
+              machine — never in the app or git.
+            </p>
+            <p className="text-xs">
+              Configured:{' '}
+              {auth
+                ? auth.connected
+                  ? 'yes (verified just now)'
+                  : 'no / invalid — see note above'
+                : 'checking…'}
+            </p>
+          </Card>
+        </div>
       )}
       {tab === 'preferences' && (
         <Card title="Appearance & Scientific Units">

@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Activity,
@@ -19,8 +20,10 @@ import {
 } from 'lucide-react'
 import { Toaster } from 'sonner'
 import { geocodePlace } from '../api/geocode'
+import { fetchAlerts } from '../api/watchlist'
 import { useBackendStatus } from '../hooks/useBackendStatus'
 import { usePrefsStore } from '../store/usePrefsStore'
+import { ProfileMenu } from './ProfileMenu'
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -42,6 +45,14 @@ export function Layout({ children }: { children: ReactNode }) {
   const [q, setQ] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const navigate = useNavigate()
+
+  const alertsQuery = useQuery({
+    queryKey: ['db-alerts'],
+    queryFn: fetchAlerts,
+    staleTime: 30000,
+    retry: 0,
+  })
+  const unreadAlerts = (alertsQuery.data ?? []).filter((a) => !a.acknowledged).length
 
   useEffect(() => {
     document.documentElement.classList.toggle('tp-light', theme === 'light')
@@ -125,19 +136,40 @@ export function Layout({ children }: { children: ReactNode }) {
               />
             </form>
             <div className="ml-auto flex items-center gap-3">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  ok === null ? 'bg-amber-400' : ok ? 'bg-emerald-400' : 'bg-red-400'
-                }`}
-                title={ok ? 'Backend connected' : 'Backend unreachable'}
+              <button
+                type="button"
+                onClick={() => navigate('/settings?tab=sources')}
+                className="p-1.5 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                title={
+                  ok === null
+                    ? 'Checking backend connection…'
+                    : ok
+                      ? 'Backend connected — open Data Sources'
+                      : 'Backend unreachable — open Data Sources'
+                }
                 aria-label={ok ? 'Backend connected' : 'Backend unreachable'}
-              />
-              <button type="button" onClick={() => navigate('/alerts')} title="Alerts" aria-label="Open alerts">
-                <Bell size={17} className="text-white/70" />
+              >
+                <span
+                  className={`block w-2.5 h-2.5 rounded-full ${
+                    ok === null ? 'bg-amber-400' : ok ? 'bg-emerald-400' : 'bg-red-400'
+                  }`}
+                />
               </button>
-              <span className="w-7 h-7 rounded-full bg-white/15 flex items-center justify-center text-xs font-bold">
-                R
-              </span>
+              <button
+                type="button"
+                onClick={() => navigate('/alerts')}
+                title={unreadAlerts > 0 ? `Alerts (${unreadAlerts} unread)` : 'Alerts'}
+                aria-label={unreadAlerts > 0 ? `Open alerts (${unreadAlerts} unread)` : 'Open alerts'}
+                className="relative p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Bell size={17} className="text-white/70" />
+                {unreadAlerts > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 tp-keep-white text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                    {unreadAlerts > 9 ? '9+' : unreadAlerts}
+                  </span>
+                )}
+              </button>
+              <ProfileMenu />
             </div>
           </header>
           <main className="flex-1 p-4 md:p-6 min-w-0 overflow-y-auto">{children}</main>

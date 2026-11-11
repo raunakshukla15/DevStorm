@@ -18,6 +18,7 @@ const Reports = lazy(() => import('./pages/Reports'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const Methodology = lazy(() => import('./pages/Methodology'))
 const Settings = lazy(() => import('./pages/Settings'))
+const Profile = lazy(() => import('./pages/Profile'))
 const ResultDetail = lazy(() => import('./pages/ResultDetail'))
 
 const queryClient = new QueryClient({
@@ -60,6 +61,7 @@ export default function App() {
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/methodology" element={<Methodology />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/profile" element={<Profile />} />
                 <Route path="/results/:jobId" element={<ResultDetail />} />
                 <Route path="/about" element={<Methodology />} />
                 <Route path="/locations" element={<Events />} />

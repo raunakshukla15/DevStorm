@@ -31,24 +31,41 @@ html.tp-light .tp-card,
 html.tp-light .bg-\[\#0c1424\],
 html.tp-light .bg-\[\#0a1120\] {
   background-color: #ffffff !important;
+  background-image: none !important;
   color: #0f172a !important;
   border-color: #cbd5e1 !important;
+}
+
+html.tp-light .bg-\[\#060b16\] {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
 }
 
 html.tp-light .text-white {
   color: #0f172a !important;
 }
 
+html.tp-light .tp-avatar,
+html.tp-light .tp-keep-white {
+  color: #ffffff !important;
+}
+
+html.tp-light .text-white\/75,
 html.tp-light .text-white\/70,
 html.tp-light .text-white\/65,
 html.tp-light .text-white\/60 {
   color: #334155 !important;
 }
 
+html.tp-light .text-white\/55,
 html.tp-light .text-white\/50,
 html.tp-light .text-white\/45,
 html.tp-light .text-white\/40 {
   color: #64748b !important;
+}
+
+html.tp-light .text-cyan-300 {
+  color: #0284c7 !important;
 }
 
 html.tp-light .border-white\/10,

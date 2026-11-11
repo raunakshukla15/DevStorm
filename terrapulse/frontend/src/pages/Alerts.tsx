@@ -27,13 +27,14 @@ export default function Alerts() {
   const [openJobId, setOpenJobId] = useState<string | null>(null)
   const viewedIds = usePrefsStore((s) => s.viewedIds)
   const markViewed = usePrefsStore((s) => s.markViewed)
+  const profileEmail = usePrefsStore((s) => s.profile.email)
 
   const [wlName, setWlName] = useState('')
   const [wlLat, setWlLat] = useState('-1.5')
   const [wlLon, setWlLon] = useState('-52.0')
   const [wlHazard, setWlHazard] = useState('flood')
   const [wlThresh, setWlThresh] = useState('Medium')
-  const [wlEmail, setWlEmail] = useState('')
+  const [wlEmail, setWlEmail] = useState(() => usePrefsStore.getState().profile.email)
 
   const watchlistQuery = useQuery({ queryKey: ['watchlist'], queryFn: fetchWatchlist })
   const dbAlertsQuery = useQuery({ queryKey: ['db-alerts'], queryFn: fetchAlerts })
@@ -42,7 +43,7 @@ export default function Alerts() {
     mutationFn: createWatchlist,
     onSuccess: () => {
       setWlName('')
-      setWlEmail('')
+      setWlEmail(profileEmail)
       toast.success('Added location to watchlist')
       void qc.invalidateQueries({ queryKey: ['watchlist'] })
     },
