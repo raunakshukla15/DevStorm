@@ -1,17 +1,23 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import logging
+import threading
 import time
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from app.services.nisar_provider import NISARDataProvider
+from cachetools import TTLCache
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+import httpx
+
+from app import db
 from app.services.flood_analysis import (
     calculate_backscatter_difference,
-    validate_observation_compatibility,
     export_geojson,
+    validate_observation_compatibility,
 )
+from app.services.nisar_provider import MAX_WINDOW_PIXELS, NISARDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +101,16 @@ HAZARD_CONFIGS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# In-memory background-job store and lightweight caches.
-_jobs: Dict[str, Dict[str, Any]] = {}
-_search_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
-_window_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+# Bounded TTL caches (jobs persist in SQLite via app.db).
 SEARCH_CACHE_TTL = 600.0
 WINDOW_CACHE_TTL = 3600.0
+GEOCODE_CACHE_TTL = 3600.0
+_cache_lock = threading.Lock()
+_search_cache: TTLCache = TTLCache(maxsize=256, ttl=SEARCH_CACHE_TTL)
+_window_cache: TTLCache = TTLCache(maxsize=64, ttl=WINDOW_CACHE_TTL)
+_geocode_cache: TTLCache = TTLCache(maxsize=256, ttl=GEOCODE_CACHE_TTL)
+_geocode_lock = asyncio.Lock()
+_last_geocode_ts: float = 0.0
 
 # Initialize data provider (lazy - will authenticate on first use)
 _provider: Optional[NISARDataProvider] = None
@@ -134,36 +144,54 @@ def granule_key(g: Dict[str, Any]) -> Optional[str]:
     return g.get("id") or g.get("https_link")
 
 
+def _granule_contains_point(
+    g: Dict[str, Any], lat: Optional[float], lon: Optional[float]
+) -> bool:
+    if lat is None or lon is None:
+        return True
+    bb = g.get("bounding_box")
+    if not bb or len(bb) != 4:
+        return True
+    try:
+        w, s, e, n = (float(v) for v in bb)
+        return (w <= lon <= e) and (s <= lat <= n)
+    except (TypeError, ValueError):
+        return True
+
+
 def pick_pair(
     b_list: List[Dict[str, Any]],
     a_list: List[Dict[str, Any]],
     before_dt: datetime,
     after_dt: datetime,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
 ):
     """Choose the best before/after granule pair.
 
-    Minimizes total date error while strongly preferring pairs with matching
-    orbit direction (same viewing geometry => scientifically valid comparison).
+    Minimizes total date error while strongly preferring pairs that cover the
+    target point and share the same orbit direction.
     """
-    best = None  # (score, cb, ca, cb_date, ca_date)
+    best = None  # (score, same_orbit, cb, ca)
     for cb in b_list or []:
         for ca in a_list or []:
             kb, ka = granule_key(cb), granule_key(ca)
             if not kb or kb == ka:
                 continue
-            db, da = parse_granule_date(cb), parse_granule_date(ca)
-            if db is None or da is None:
+            db_dt, da_dt = parse_granule_date(cb), parse_granule_date(ca)
+            if db_dt is None or da_dt is None:
                 continue
-            err = abs((db - before_dt).days) + abs((da - after_dt).days)
+            err = abs((db_dt - before_dt).days) + abs((da_dt - after_dt).days)
             ob = (cb.get("orbit_direction") or "unknown").lower()
             oa = (ca.get("orbit_direction") or "unknown").lower()
             same_orbit = ob != "unknown" and ob == oa
-            score = err + (0 if same_orbit else 30)
+            covers = _granule_contains_point(cb, lat, lon) and _granule_contains_point(ca, lat, lon)
+            score = err + (0 if same_orbit else 30) + (0 if covers else 1000)
             if best is None or score < best[0]:
-                best = (score, cb, ca, db, da)
+                best = (score, same_orbit, cb, ca)
     if best is None:
         return None, None
-    return (best[1], best[2]), {"same_orbit": best[0] < 30}
+    return (best[2], best[3]), {"same_orbit": best[1]}
 
 
 def summarize_granule(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -182,37 +210,85 @@ def summarize_granule(g: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def cached_search(provider, short_name, temporal, bbox, count=20):
-    key = (short_name, temporal[0], temporal[1],
-           round(bbox[0], 2), round(bbox[1], 2), round(bbox[2], 2), round(bbox[3], 2), count)
-    now = time.time()
-    hit = _search_cache.get(str(key))
-    if hit and now - hit[0] < SEARCH_CACHE_TTL:
+    key = str((short_name, temporal[0], temporal[1],
+               round(bbox[0], 2), round(bbox[1], 2), round(bbox[2], 2), round(bbox[3], 2), count))
+    with _cache_lock:
+        hit = _search_cache.get(key)
+    if hit is not None:
         logger.info("CMR search cache hit for %s", short_name)
-        return hit[1]
+        return hit
     results = provider.search_datasets(
         short_name=short_name, temporal=temporal, bbox=bbox, count=count)
-    _search_cache[str(key)] = (now, results)
+    with _cache_lock:
+        _search_cache[key] = results
     return results
 
 
-def cached_window(provider, granule, band, window=128):
+def cached_window(
+    provider,
+    granule,
+    band,
+    window: int = 256,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+):
     key = granule_key(granule) or ""
-    now = time.time()
-    hit = _window_cache.get(f"{key}:{band}:{window}")
-    if hit and now - hit[0] < WINDOW_CACHE_TTL:
+    lat_k = f"{lat:.4f}" if lat is not None else "center"
+    lon_k = f"{lon:.4f}" if lon is not None else "center"
+    cache_key = f"{key}:{band}:{window}:{lat_k}:{lon_k}"
+    with _cache_lock:
+        hit = _window_cache.get(cache_key)
+    if hit is not None:
         logger.info("Window cache hit for %s", (granule.get("title") or "")[:40])
-        return hit[1]
+        return hit
     values = provider.stream_backscatter_window(
-        granule.get("https_link"), band=band, window=window)
-    _window_cache[f"{key}:{band}:{window}"] = (now, values)
+        granule.get("https_link"), band=band, window=window, lat=lat, lon=lon
+    )
+    with _cache_lock:
+        _window_cache[cache_key] = values
     return values
 
 
 def set_stage(job_id: str, stage: str, progress: int):
-    job = _jobs.get(job_id)
-    if job is not None:
-        job["stage"] = stage
-        job["progress"] = progress
+    db.update_job(job_id, stage=stage, progress=progress)
+
+
+def _window_bounds_wgs84(
+    x_coords: Any,
+    y_coords: Any,
+    crs_str: str,
+    spacing_m: Optional[List[float]] = None,
+) -> Optional[List[List[float]]]:
+    """Compute [[south, west], [north, east]] WGS84 bounds for a coordinate window."""
+    try:
+        import numpy as np
+        from pyproj import Transformer
+
+        xs = np.asarray(x_coords, dtype=np.float64)
+        ys = np.asarray(y_coords, dtype=np.float64)
+        if xs.size == 0 or ys.size == 0:
+            return None
+        hx = (
+            abs(float(spacing_m[0])) / 2.0
+            if spacing_m and len(spacing_m) >= 2
+            else (abs(float(xs[1] - xs[0])) / 2.0 if xs.size > 1 else 0.0)
+        )
+        hy = (
+            abs(float(spacing_m[1])) / 2.0
+            if spacing_m and len(spacing_m) >= 2
+            else (abs(float(ys[1] - ys[0])) / 2.0 if ys.size > 1 else 0.0)
+        )
+        x_min, x_max = float(np.min(xs)) - hx, float(np.max(xs)) + hx
+        y_min, y_max = float(np.min(ys)) - hy, float(np.max(ys)) + hy
+        if str(crs_str or "EPSG:4326").upper() != "EPSG:4326":
+            transformer = Transformer.from_crs(crs_str, "EPSG:4326", always_xy=True)
+            lons, lats = transformer.transform(
+                [x_min, x_max, x_min, x_max], [y_min, y_min, y_max, y_max]
+            )
+            return [[min(lats), min(lons)], [max(lats), max(lons)]]
+        return [[y_min, x_min], [y_max, x_max]]
+    except Exception:
+        return None
 
 
 @router.get("/health", response_model=dict, summary="Health check endpoint")
@@ -347,18 +423,6 @@ async def get_observations(
     return found
 
 
-@router.get("/observations/{observation_id}", response_model=dict, summary="How to fetch one granule")
-async def get_observation(observation_id: str):
-    """Explain how to retrieve a specific granule (no fabricated metadata)."""
-    return {
-        "id": observation_id,
-        "note": "Use GET /api/v1/observations?dataset_id=...&lat=...&lon=... "
-                "to obtain real granule ids, acquisition dates and HTTPS/S3 "
-                "download URLs. No metadata is invented for unknown ids.",
-        "https_search": "https://search.earthdata.nasa.gov/search",
-    }
-
-
 @router.get("/observations/availability", summary="Check live NISAR data availability")
 async def check_availability(
     lat: float = Query(..., description="Latitude"),
@@ -402,12 +466,75 @@ async def check_availability(
     }
 
 
+@router.get("/observations/{observation_id}", response_model=dict, summary="How to fetch one granule")
+async def get_observation(observation_id: str):
+    """Explain how to retrieve a specific granule (no fabricated metadata)."""
+    return {
+        "id": observation_id,
+        "note": "Use GET /api/v1/observations?dataset_id=...&lat=...&lon=... "
+                "to obtain real granule ids, acquisition dates and HTTPS/S3 "
+                "download URLs. No metadata is invented for unknown ids.",
+        "https_search": "https://search.earthdata.nasa.gov/search",
+    }
+
+
+@router.get("/geocode", summary="Geocode a place name via OpenStreetMap Nominatim")
+async def geocode_place(
+    q: str = Query(..., min_length=1, max_length=200, description="Place name or query"),
+    limit: int = Query(1, ge=1, le=5, description="Max results"),
+):
+    """Server-side geocoding proxy with User-Agent, caching, and 1 req/s rate limit."""
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    cache_key = f"{query.lower()}:{limit}"
+    with _cache_lock:
+        cached = _geocode_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    global _last_geocode_ts
+    async with _geocode_lock:
+        with _cache_lock:
+            cached = _geocode_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        elapsed = time.monotonic() - _last_geocode_ts
+        if _last_geocode_ts > 0 and elapsed < 1.0:
+            await asyncio.sleep(1.0 - elapsed)
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                headers={"User-Agent": "TerraPulse/0.2 (https://github.com/terrapulse)"},
+            ) as client:
+                resp = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"format": "jsonv2", "q": query, "limit": limit},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"Geocoding service error: {e}")
+        finally:
+            _last_geocode_ts = time.monotonic()
+
+    with _cache_lock:
+        _geocode_cache[cache_key] = data
+    return data
+
+
 def _run_analysis_job(job_id: str, params: Dict[str, Any]):
     """Background worker: live granule discovery + windowed change detection."""
     import numpy as np
     import xarray as xr
 
-    job = _jobs[job_id]
+    def fail(message: str, extra: Optional[Dict[str, Any]] = None):
+        full_msg = message
+        if extra and extra.get("warnings"):
+            full_msg = f"{message} ({'; '.join(str(w) for w in extra['warnings'])})"
+        db.update_job(job_id, status="failed", error=full_msg)
+        logger.warning("Job %s failed: %s", job_id, full_msg)
+
     hazard = (params.get("hazard") or "flood").lower()
     config = HAZARD_CONFIGS.get(hazard)
     if config is None:
@@ -416,8 +543,9 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
     before_date = params.get("before_date")
     after_date = params.get("after_date")
     auto_dates = not before_date or not after_date
-    lat, lon = params["lat"], params["lon"]
+    lat, lon = float(params["lat"]), float(params["lon"])
     dataset_id, band = params["dataset_id"], params["band"]
+    req_window = max(64, min(int(params.get("window") or 256), MAX_WINDOW_PIXELS))
     before_dt = after_dt = None
     if not auto_dates:
         try:
@@ -429,13 +557,6 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
         if after_dt <= before_dt:
             fail("After date must be after before date.")
             return
-
-    def fail(message: str, extra: Optional[Dict[str, Any]] = None):
-        job["status"] = "failed"
-        job["error"] = message
-        if extra:
-            job.update(extra)
-        logger.warning("Job %s failed: %s", job_id, message)
 
     try:
         set_stage(job_id, "authenticating", 5)
@@ -457,7 +578,7 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
             return cached_search(provider, sn, (start, end), bbox, count=50)
 
         if auto_dates:
-            # Newest granule in the last 90 days + newest one >=12 days older.
+            # Newest granule covering point in the last 90 days + newest one >=12 days older.
             end = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
             for sn in resolve_short_names(dataset_id):
@@ -472,9 +593,11 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
                 notes.append(f"{sn}: {len(dated)} granules in last 90 days")
                 if not dated:
                     continue
-                ca, da = dated[0]
+                covering = [(g, d) for g, d in dated if _granule_contains_point(g, lat, lon)]
+                pool_dated = covering if len(covering) >= 2 else dated
+                ca, da = pool_dated[0]
                 best = None
-                for g, d in dated[1:]:
+                for g, d in pool_dated[1:]:
                     if (da - d).days < 12 or granule_key(g) == granule_key(ca):
                         continue
                     ob = (g.get("orbit_direction") or "unknown").lower()
@@ -512,7 +635,7 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
                     continue
                 notes.append(f"{sn}: {len(b_list)} before-window, {len(a_list)} after-window granules")
                 # pick_pair returns ((cb, ca), info) or (None, None)
-                picked, info = pick_pair(b_list, a_list, before_dt, after_dt)
+                picked, info = pick_pair(b_list, a_list, before_dt, after_dt, lat=lat, lon=lon)
                 if picked is not None:
                     before_g, after_g = picked
                     pair_info = info or {}
@@ -528,15 +651,15 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
         set_stage(job_id, "streaming granule windows (1/2)", 45)
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
-                fb = pool.submit(cached_window, provider, before_g, band)
+                fb = pool.submit(cached_window, provider, before_g, band, req_window, lat, lon)
                 set_stage(job_id, "streaming granule windows (2/2)", 60)
-                fa = pool.submit(cached_window, provider, after_g, band)
+                fa = pool.submit(cached_window, provider, after_g, band, req_window, lat, lon)
                 b_win, a_win = fb.result(), fa.result()
+        except ValueError as e:
+            fail(str(e))
+            return
         except RuntimeError as e:
-            job["status"] = "complete"
-            job["progress"] = 100
-            job["stage"] = "done"
-            job["result"] = {
+            db.save_job_result(job_id, {
                 "success": True,
                 "status": "metadata_only",
                 "method": "backscatter_difference_flood_indicator",
@@ -554,7 +677,7 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
                     "Use the provided HTTPS/S3 URLs to download the real products.",
                 ],
                 "produced_at": datetime.now().isoformat() + "Z",
-            }
+            })
             return
 
         set_stage(job_id, "computing backscatter difference", 85)
@@ -566,21 +689,48 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
                                                      dtype=np.float64), eps))
         a_db = 10.0 * np.log10(np.maximum(np.asarray(a_win["values"],
                                                      dtype=np.float64), eps))
-        n = b_db.shape[0]
-        coords = {"y": np.arange(n), "x": np.arange(n)}
+        bx = np.asarray(
+            b_win.get("x_coords") if b_win.get("x_coords") is not None else np.arange(b_db.shape[1]),
+            dtype=np.float64,
+        )
+        by = np.asarray(
+            b_win.get("y_coords") if b_win.get("y_coords") is not None else np.arange(b_db.shape[0]),
+            dtype=np.float64,
+        )
+        ax = np.asarray(
+            a_win.get("x_coords") if a_win.get("x_coords") is not None else np.arange(a_db.shape[1]),
+            dtype=np.float64,
+        )
+        ay = np.asarray(
+            a_win.get("y_coords") if a_win.get("y_coords") is not None else np.arange(a_db.shape[0]),
+            dtype=np.float64,
+        )
         ob = (before_g.get("orbit_direction") or "unknown").lower()
         oa = (after_g.get("orbit_direction") or "unknown").lower()
-        before_ds = xr.Dataset({"sigma0_db": (["y", "x"], b_db)}, coords=coords)
+        before_ds = xr.Dataset({"sigma0_db": (["y", "x"], b_db)}, coords={"y": by, "x": bx})
         before_ds.attrs = {"polarizations": band, "orbit_direction": ob,
                            "acquisition_date": before_g.get("acquisition_date") or before_date,
                            "source_layer": b_win["variable"],
-                           "source_granule": before_g.get("id")}
-        after_ds = xr.Dataset({"sigma0_db": (["y", "x"], a_db)}, coords=coords)
+                           "source_granule": before_g.get("id"),
+                           "crs": b_win.get("crs", "EPSG:4326")}
+        after_ds = xr.Dataset({"sigma0_db": (["y", "x"], a_db)}, coords={"y": ay, "x": ax})
         after_ds.attrs = {"polarizations": band, "orbit_direction": oa,
                           "acquisition_date": after_g.get("acquisition_date") or after_date,
                           "source_layer": a_win["variable"],
-                          "source_granule": after_g.get("id")}
+                          "source_granule": after_g.get("id"),
+                          "crs": a_win.get("crs", "EPSG:4326")}
 
+        if b_win.get("epsg") == a_win.get("epsg") and (
+            bx.shape != ax.shape
+            or by.shape != ay.shape
+            or not np.allclose(bx, ax)
+            or not np.allclose(by, ay)
+        ):
+            sp_align = b_win.get("spacing_m") or a_win.get("spacing_m") or [20.0, 20.0]
+            tol = max(abs(float(sp_align[0])), abs(float(sp_align[1]))) * 1.5
+            after_ds = after_ds.reindex_like(before_ds, method="nearest", tolerance=tol)
+
+        n = int(b_db.shape[0])
         compatibility = validate_observation_compatibility(before_ds, after_ds)
         if not compatibility.get("compatible", False):
             fail("Retrieved windows are not compatible for change detection.",
@@ -615,24 +765,31 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
             outline_mask = difference_mask
             outline_thr = thr_db
             outline_label = "flood_outlines"
-        geojson_result = export_geojson(difference_mask=outline_mask, threshold=outline_thr)
+
+        sp = b_win.get("spacing_m") or a_win.get("spacing_m")
+        crs_str = b_win.get("crs", "EPSG:4326")
+        geojson_result = export_geojson(
+            difference_mask=outline_mask,
+            crs=crs_str,
+            threshold=outline_thr,
+            x_coords=bx,
+            y_coords=by,
+            spacing_m=sp,
+        )
+        bounds_wgs84 = _window_bounds_wgs84(bx, by, crs_str, sp)
 
         # Real affected area: outline pixel counts x ground spacing.
         # Omitted (null) when spacing metadata is unavailable — never guessed.
         affected_area_km2 = None
         try:
-            sp = b_win.get("spacing_m") or a_win.get("spacing_m")
             if sp:
                 px = sum(int(f.get("properties", {}).get("pixel_count", 0))
                          for f in geojson_result.get("features", []))
-                affected_area_km2 = px * float(sp[0]) * float(sp[1]) / 1e6
+                affected_area_km2 = px * abs(float(sp[0])) * abs(float(sp[1])) / 1e6
         except Exception:
             affected_area_km2 = None
 
-        job["status"] = "complete"
-        job["progress"] = 100
-        job["stage"] = "done"
-        job["result"] = {
+        result_payload = {
             "success": True,
             "status": "analyzed",
             "method": "backscatter_difference_indicator (dB units)",
@@ -654,13 +811,17 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
             "detection_mode": mode,
             "windows": {
                 "size": n,
+                "requested_window": req_window,
                 "before_layer": b_win["variable"],
                 "after_layer": a_win["variable"],
                 "before_origin": b_win["window_origin"],
                 "before_shape": list(b_win["shape"]),
                 "after_origin": a_win["window_origin"],
                 "after_shape": list(a_win["shape"]),
-                "note": "Center-window comparison in dB, not full-swath analysis.",
+                "crs": crs_str,
+                "epsg": b_win.get("epsg"),
+                "bounds": bounds_wgs84,
+                "note": "Location-centered window comparison in dB, not full-swath analysis.",
             },
             "before_granule": summarize_granule(before_g),
             "after_granule": summarize_granule(after_g),
@@ -683,7 +844,7 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
             "results": {outline_label: geojson_result},
             "caveats_and_limitations": [
                 f"This is a change INDICATOR only, not a validated {hazard} map",
-                "Comparison covers a small center window of each granule in dB units",
+                "Comparison covers a location-centered window of each granule in dB units",
                 "Backscatter changes can be caused by: vegetation condition, "
                 "soil moisture, terrain — not just the target hazard",
                 "NISAR L-band radar may miss changes under dense canopy",
@@ -697,8 +858,9 @@ def _run_analysis_job(job_id: str, params: Dict[str, Any]):
             },
             "produced_at": datetime.now().isoformat() + "Z",
         }
+        db.save_job_result(job_id, result_payload)
         logger.info("Job %s complete [%s]: mean diff=%.3f dB, %.1f%% decrease, %.1f%% disturbed",
-                    job_id, hazard, difference_result.get("mean_difference"),
+                    job_id, hazard, difference_result.get("mean_difference") or 0.0,
                     difference_result.get("percentage_decrease"), disturbed_pct)
     except Exception as e:
         logger.error("Job %s crashed: %s", job_id, e, exc_info=True)
@@ -711,10 +873,11 @@ async def change_detection(
     background_tasks: BackgroundTasks,
     before_date: str = Query(..., description="Target before date (YYYY-MM-DD)"),
     after_date: str = Query(..., description="Target after date (YYYY-MM-DD)"),
-    lat: float = Query(..., description="Center latitude"),
-    lon: float = Query(..., description="Center longitude"),
+    lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
+    lon: float = Query(..., ge=-180, le=180, description="Center longitude"),
     dataset_id: str = Query("nisar_l2_gcov", description="Dataset id or CMR short name"),
     band: str = Query("HH", description="Polarization band"),
+    window: int = Query(256, ge=64, le=MAX_WINDOW_PIXELS, description="Window size in pixels"),
 ) -> Dict[str, Any]:
     """Start a live NISAR flood-indicator analysis as a background job.
 
@@ -734,18 +897,18 @@ async def change_detection(
         raise HTTPException(status_code=400, detail="After date must be after before date.")
 
     job_id = uuid.uuid4().hex[:12]
-    _jobs[job_id] = {
-        "job_id": job_id,
-        "status": "running",
-        "stage": "queued",
-        "progress": 0,
-        "params": {"hazard": "flood", "before_date": before_date, "after_date": after_date,
-                   "lat": lat, "lon": lon, "dataset_id": dataset_id, "band": band},
-        "created_at": datetime.now().isoformat() + "Z",
-        "result": None,
-        "error": None,
+    params = {
+        "hazard": "flood",
+        "before_date": before_date,
+        "after_date": after_date,
+        "lat": lat,
+        "lon": lon,
+        "dataset_id": dataset_id,
+        "band": band,
+        "window": window,
     }
-    background_tasks.add_task(_run_analysis_job, job_id, _jobs[job_id]["params"])
+    db.create_job(job_id, params)
+    background_tasks.add_task(_run_analysis_job, job_id, params)
     logger.info("Started flood analysis job %s for (%s, %s)", job_id, lat, lon)
     return {"job_id": job_id, "status": "running",
             "status_url": f"/api/v1/analysis/jobs/{job_id}",
@@ -757,12 +920,13 @@ async def change_detection(
 async def hazard_analysis(
     background_tasks: BackgroundTasks,
     hazard: str = Query(..., description="flood | tsunami | hurricane | volcano | earthquake"),
-    lat: float = Query(..., description="Center latitude"),
-    lon: float = Query(..., description="Center longitude"),
+    lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
+    lon: float = Query(..., ge=-180, le=180, description="Center longitude"),
     before_date: Optional[str] = Query(None, description="Target before date (YYYY-MM-DD); omit both for auto latest pair"),
     after_date: Optional[str] = Query(None, description="Target after date (YYYY-MM-DD)"),
     dataset_id: str = Query("nisar_l2_gcov", description="Dataset id or CMR short name"),
     band: str = Query("HH", description="Polarization band"),
+    window: int = Query(256, ge=64, le=MAX_WINDOW_PIXELS, description="Window size in pixels"),
 ) -> Dict[str, Any]:
     """Start a hazard-specific live NISAR analysis as a background job.
 
@@ -788,18 +952,18 @@ async def hazard_analysis(
             raise HTTPException(status_code=400, detail="After date must be after before date.")
 
     job_id = uuid.uuid4().hex[:12]
-    _jobs[job_id] = {
-        "job_id": job_id,
-        "status": "running",
-        "stage": "queued",
-        "progress": 0,
-        "params": {"hazard": hazard, "before_date": before_date, "after_date": after_date,
-                   "lat": lat, "lon": lon, "dataset_id": dataset_id, "band": band},
-        "created_at": datetime.now().isoformat() + "Z",
-        "result": None,
-        "error": None,
+    params = {
+        "hazard": hazard,
+        "before_date": before_date,
+        "after_date": after_date,
+        "lat": lat,
+        "lon": lon,
+        "dataset_id": dataset_id,
+        "band": band,
+        "window": window,
     }
-    background_tasks.add_task(_run_analysis_job, job_id, _jobs[job_id]["params"])
+    db.create_job(job_id, params)
+    background_tasks.add_task(_run_analysis_job, job_id, params)
     logger.info("Started %s job %s for (%s, %s)", hazard, job_id, lat, lon)
     return {"job_id": job_id, "status": "running",
             "status_url": f"/api/v1/analysis/jobs/{job_id}",
@@ -865,9 +1029,9 @@ async def list_jobs(limit: int = Query(20, description="Max jobs, newest first")
 
     Only jobs actually run on this backend are listed — nothing is invented.
     """
-    ordered = sorted(_jobs.values(), key=lambda j: j.get("created_at", ""), reverse=True)
+    ordered = db.list_jobs(limit=limit)
     out = []
-    for job in ordered[: max(1, min(limit, 100))]:
+    for job in ordered:
         p = job.get("params", {}) or {}
         res = job.get("result") or {}
         an = res.get("analysis") or {}
@@ -896,7 +1060,7 @@ async def list_jobs(limit: int = Query(20, description="Max jobs, newest first")
 @router.get("/analysis/jobs/{job_id}", summary="Get background job status/result")
 async def get_job(job_id: str):
     """Poll a change-detection job: stage, progress %, and result when done."""
-    job = _jobs.get(job_id)
+    job = db.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Unknown job id '{job_id}'.")
     return job
