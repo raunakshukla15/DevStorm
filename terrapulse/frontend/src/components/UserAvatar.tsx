@@ -1,6 +1,6 @@
 import type { OperatorProfile } from '../store/usePrefsStore'
 import { AVATAR_TONES, computeInitials, getAvatarPresetMeta } from '../utils/avatar'
-import { AvatarPresetDrawing } from './AvatarDrawing'
+import { AvatarPresetDrawing, AvatarToneDrawing } from './AvatarDrawing'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 
@@ -60,9 +60,20 @@ export function UserAvatar({
   return (
     <span
       style={badgeStyle}
-      className={`${dims.box} ${tone.bgClass} tp-avatar ${dims.text} rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white border border-white/30 shadow-sm select-none ${className}`}
+      className={`relative overflow-hidden ${dims.box} ${tone.bgClass} tp-avatar ${dims.text} rounded-full inline-flex items-center justify-center shrink-0 font-bold text-white border border-white/30 shadow-sm select-none ${className}`}
     >
-      {initials}
+      <span
+        aria-hidden="true"
+        className="absolute inset-0 flex items-center justify-center opacity-40 pointer-events-none"
+      >
+        <AvatarToneDrawing tone={tone.id} size={Math.round(dims.icon * 1.5)} />
+      </span>
+      <span
+        style={{ textShadow: '0 1px 4px rgba(8, 12, 22, 0.7)' }}
+        className="relative z-10"
+      >
+        {initials}
+      </span>
     </span>
   )
 }

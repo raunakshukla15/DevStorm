@@ -119,6 +119,7 @@ describe('ProfileMenu header interaction', () => {
     expect(initialBadge).not.toBeNull()
     expect(initialBadge?.className).toContain('border-white/30')
     expect(initialBadge?.style.backgroundColor).toBe('rgb(2, 132, 199)')
+    expect(initialBadge?.querySelector('svg[data-drawing="tone-ocean"]')).not.toBeNull()
 
     fireEvent.click(trigger)
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
@@ -162,7 +163,14 @@ describe('Profile page avatar choice and details editor', () => {
   })
 
   it('lets operator choose icon avatar, accent tone, edit details, and reset', () => {
-    renderWithProviders(<Profile />, '/profile')
+    const { container } = renderWithProviders(<Profile />, '/profile')
+
+    // In default Monogram mode, selecting a Badge Accent Color stamps its drawing on the profile badges
+    const amberToneBtn = screen.getByRole('button', { name: /Select SAR Amber avatar color/i })
+    fireEvent.click(amberToneBtn)
+    const monogramBadges = container.querySelectorAll('.tp-avatar')
+    expect(monogramBadges.length).toBeGreaterThanOrEqual(2)
+    expect(monogramBadges[0].querySelector('svg[data-drawing="tone-amber"]')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Icon Avatars' }))
     const radarPresetBtn = screen.getByRole('button', { name: /L-Band SAR/i })

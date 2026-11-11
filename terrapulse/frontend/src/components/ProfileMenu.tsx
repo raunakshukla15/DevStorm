@@ -222,13 +222,19 @@ export function ProfileMenu() {
                 onClick={() => setProfile({ avatarKind: 'initials' })}
                 title={`Monogram (${initials})`}
                 aria-label={`Use initials avatar (${initials})`}
-                className={`w-8 h-8 rounded-full text-xs font-bold flex items-center justify-center border transition-all cursor-pointer ${
+                className={`relative overflow-hidden w-8 h-8 rounded-full text-xs font-bold flex items-center justify-center border transition-all cursor-pointer ${
                   profile.avatarKind === 'initials'
                     ? 'border-cyan-400 ring-2 ring-cyan-400/50 bg-blue-600/30 text-white'
                     : 'border-white/15 bg-white/5 text-white/75 hover:border-white/35'
                 }`}
               >
-                {initials}
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-0 flex items-center justify-center opacity-30 pointer-events-none"
+                >
+                  <AvatarToneDrawing tone={profile.avatarTone} size={20} />
+                </span>
+                <span className="relative z-10">{initials}</span>
               </button>
 
               {quickPresets.map((preset) => {
