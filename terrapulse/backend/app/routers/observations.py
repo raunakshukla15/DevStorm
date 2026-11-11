@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 import httpx
@@ -56,17 +56,33 @@ async def get_observations(
     temporal = (start_date, end_date) if (start_date and end_date) else ("2026-01-01", "2026-12-31")
 
     short_names = resolve_short_names(dataset_id)
-    batches = await asyncio.gather(
-        *(
-            asyncio.to_thread(cache.cached_search, provider, sn, temporal, bbox, 20)
-            for sn in short_names
-        ),
-        return_exceptions=True,
-    )
-
     found: List[ObservationItemOut] = []
     errors: List[str] = []
-    for sn, batch in zip(short_names, batches):
+    # Try primary collection first (usually PROVISIONAL_V1) so CMR doesn't wait on empty fallbacks.
+    primary_sn = short_names[0]
+    batches: List[Any] = []
+    used_sns = [primary_sn]
+    try:
+        primary_batch = await asyncio.to_thread(
+            cache.cached_search, provider, primary_sn, temporal, bbox, 30
+        )
+        batches.append(primary_batch)
+    except Exception as exc:
+        batches.append(exc)
+        primary_batch = []
+
+    if not primary_batch and len(short_names) > 1:
+        used_sns.extend(short_names[1:])
+        extra = await asyncio.gather(
+            *(
+                asyncio.to_thread(cache.cached_search, provider, sn, temporal, bbox, 30)
+                for sn in short_names[1:]
+            ),
+            return_exceptions=True,
+        )
+        batches.extend(extra)
+
+    for sn, batch in zip(used_sns, batches):
         if isinstance(batch, Exception):
             errors.append(f"{sn}: {batch}")
             continue
@@ -118,9 +134,9 @@ async def check_availability(
         )
 
     short_names = resolve_short_names(dataset_id or "nisar_l2_gcov")
-    checks = await asyncio.gather(
-        *(
-            asyncio.to_thread(
+    for sn in short_names:
+        try:
+            result = await asyncio.to_thread(
                 provider.check_availability,
                 lat=lat,
                 lon=lon,
@@ -128,13 +144,8 @@ async def check_availability(
                 end_date=end_date,
                 short_name=sn,
             )
-            for sn in short_names
-        ),
-        return_exceptions=True,
-    )
-    for sn, result in zip(short_names, checks):
-        if isinstance(result, Exception):
-            logger.warning("Availability check failed for %s: %s", sn, result)
+        except Exception as exc:
+            logger.warning("Availability check failed for %s: %s", sn, exc)
             continue
         if result.get("available"):
             return AvailabilityResponse(

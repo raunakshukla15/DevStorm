@@ -146,14 +146,27 @@ class JobDetailOut(BaseModel):
     error: Optional[str] = None
 
 
+class PassSummaryOut(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = None
+    date: str
+    acquisition_date: Optional[str] = None
+    orbit_direction: Optional[str] = None
+    covers_point: bool = True
+
+
 class PointInsightsResponse(BaseModel):
     available: bool
     location: LocationPoint
     short_name: Optional[str] = None
     granules_last_90d: Optional[int] = None
+    granules_last_180d: Optional[int] = None
+    earliest_acquisition: Optional[str] = None
     latest_acquisition: Optional[str] = None
     latest_granule: Optional[GranuleSummaryOut] = None
     recent_acquisitions: List[str] = Field(default_factory=list)
+    available_passes: List[PassSummaryOut] = Field(default_factory=list)
+    query_elapsed_ms: Optional[int] = None
     supported_hazards: List[str] = Field(default_factory=list)
     short_names_searched: List[str] = Field(default_factory=list)
     note: str

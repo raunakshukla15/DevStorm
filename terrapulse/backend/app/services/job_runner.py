@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import logging
 import os
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -81,7 +82,7 @@ def pick_pair(
     """Choose the best before/after granule pair.
 
     Minimizes total date error while strongly preferring pairs that cover the
-    target point and share the same orbit direction.
+    target point, share the same orbit direction, and center closer to (lat, lon).
     """
     best = None
     for cb in b_list or []:
@@ -97,12 +98,186 @@ def pick_pair(
             oa = (ca.get("orbit_direction") or "unknown").lower()
             same_orbit = ob != "unknown" and ob == oa
             covers = _granule_contains_point(cb, lat, lon) and _granule_contains_point(ca, lat, lon)
-            score = err + (0 if same_orbit else 30) + (0 if covers else 1000)
+            center_penalty = 0.0
+            if lat is not None and lon is not None:
+                for cg in (cb, ca):
+                    bb = cg.get("bounding_box")
+                    if bb and len(bb) == 4:
+                        cx = 0.5 * (bb[0] + bb[2])
+                        cy = 0.5 * (bb[1] + bb[3])
+                        center_penalty += min(abs(cx - lon) + abs(cy - lat), 5.0) * 0.05
+            score = err + (0 if same_orbit else 30) + (0 if covers else 1000) + center_penalty
             if best is None or score < best[0]:
                 best = (score, same_orbit, cb, ca)
     if best is None:
         return None, None
     return (best[2], best[3]), {"same_orbit": best[1]}
+
+
+def compute_comparison_charts(
+    before_db: np.ndarray,
+    after_db: np.ndarray,
+    diff_db: Optional[np.ndarray],
+    spacing_m: Optional[List[float]] = None,
+    threshold_db: float = -2.0,
+) -> Dict[str, Any]:
+    """Compute Before-vs-After distributions, class breakdowns, and transect strictly from raster pixels."""
+    b_arr = np.asarray(before_db, dtype=np.float64)
+    a_arr = np.asarray(after_db, dtype=np.float64)
+    d_arr = np.asarray(diff_db, dtype=np.float64) if diff_db is not None else (a_arr - b_arr)
+    valid_mask = np.isfinite(b_arr) & np.isfinite(a_arr) & np.isfinite(d_arr)
+    n_valid = int(np.sum(valid_mask))
+    if n_valid == 0:
+        return {
+            "comparison": None,
+            "backscatter_histogram": [],
+            "delta_histogram": [],
+            "condition_breakdown": [],
+            "transect": [],
+        }
+
+    bv = b_arr[valid_mask]
+    av = a_arr[valid_mask]
+    dv = d_arr[valid_mask]
+
+    comparison = {
+        "before_mean_db": round(float(np.mean(bv)), 3),
+        "before_median_db": round(float(np.median(bv)), 3),
+        "before_std_db": round(float(np.std(bv)), 3),
+        "before_p10_db": round(float(np.percentile(bv, 10)), 3),
+        "before_p90_db": round(float(np.percentile(bv, 90)), 3),
+        "after_mean_db": round(float(np.mean(av)), 3),
+        "after_median_db": round(float(np.median(av)), 3),
+        "after_std_db": round(float(np.std(av)), 3),
+        "after_p10_db": round(float(np.percentile(av, 10)), 3),
+        "after_p90_db": round(float(np.percentile(av, 90)), 3),
+        "delta_mean_db": round(float(np.mean(dv)), 3),
+        "delta_median_db": round(float(np.median(dv)), 3),
+        "threshold_db": round(float(threshold_db), 3),
+    }
+
+    # Backscatter distribution histogram across [-27.5, +2.5] dB in 2.5 dB bins
+    bs_edges = np.linspace(-27.5, 2.5, 13)
+    b_hist, _ = np.histogram(np.clip(bv, bs_edges[0], bs_edges[-1] - 1e-6), bins=bs_edges)
+    a_hist, _ = np.histogram(np.clip(av, bs_edges[0], bs_edges[-1] - 1e-6), bins=bs_edges)
+    backscatter_histogram: List[Dict[str, Any]] = []
+    for i in range(len(bs_edges) - 1):
+        lo, hi = float(bs_edges[i]), float(bs_edges[i + 1])
+        label = f"{lo:.1f}" if i == 0 else f"{lo:.1f}..{hi:.1f}"
+        backscatter_histogram.append(
+            {
+                "bin": label,
+                "mid_db": round(0.5 * (lo + hi), 2),
+                "before_pct": round(float(b_hist[i]) / n_valid * 100.0, 2),
+                "after_pct": round(float(a_hist[i]) / n_valid * 100.0, 2),
+            }
+        )
+
+    # Delta dB histogram across [-6, +6] dB in 1 dB bins
+    d_edges = np.linspace(-6.0, 6.0, 13)
+    d_hist, _ = np.histogram(np.clip(dv, d_edges[0], d_edges[-1] - 1e-6), bins=d_edges)
+    delta_histogram: List[Dict[str, Any]] = []
+    for i in range(len(d_edges) - 1):
+        lo, hi = float(d_edges[i]), float(d_edges[i + 1])
+        mid = 0.5 * (lo + hi)
+        if i == 0:
+            lbl = "< -5 dB"
+        elif i == len(d_edges) - 2:
+            lbl = "> +5 dB"
+        else:
+            lbl = f"{lo:+.0f}..{hi:+.0f}"
+        cls = (
+            "drop"
+            if mid <= -abs(threshold_db) or hi <= -1.5
+            else ("gain" if lo >= 1.5 else "stable")
+        )
+        delta_histogram.append(
+            {
+                "bin": lbl,
+                "mid_db": round(mid, 2),
+                "pct": round(float(d_hist[i]) / n_valid * 100.0, 2),
+                "direction": cls,
+            }
+        )
+
+    # 5-bucket physical backscatter change breakdown
+    c_strong_drop = int(np.sum(dv < -3.0))
+    c_mod_drop = int(np.sum((dv >= -3.0) & (dv < -1.5)))
+    c_stable = int(np.sum((dv >= -1.5) & (dv <= 1.5)))
+    c_mod_gain = int(np.sum((dv > 1.5) & (dv <= 3.0)))
+    c_strong_gain = int(np.sum(dv > 3.0))
+    condition_breakdown = [
+        {
+            "key": "strong_drop",
+            "label": "Strong drop (< -3 dB)",
+            "pixels": c_strong_drop,
+            "pct": round(c_strong_drop / n_valid * 100.0, 2),
+            "color": "#22d3ee",
+        },
+        {
+            "key": "moderate_drop",
+            "label": "Moderate drop (-3..-1.5 dB)",
+            "pixels": c_mod_drop,
+            "pct": round(c_mod_drop / n_valid * 100.0, 2),
+            "color": "#38bdf8",
+        },
+        {
+            "key": "stable",
+            "label": "Stable (-1.5..+1.5 dB)",
+            "pixels": c_stable,
+            "pct": round(c_stable / n_valid * 100.0, 2),
+            "color": "#64748b",
+        },
+        {
+            "key": "moderate_gain",
+            "label": "Moderate gain (+1.5..+3 dB)",
+            "pixels": c_mod_gain,
+            "pct": round(c_mod_gain / n_valid * 100.0, 2),
+            "color": "#fbbf24",
+        },
+        {
+            "key": "strong_gain",
+            "label": "Strong gain (> +3 dB)",
+            "pixels": c_strong_gain,
+            "pct": round(c_strong_gain / n_valid * 100.0, 2),
+            "color": "#f97316",
+        },
+    ]
+
+    # Center-row horizontal backscatter transect (up to 24 spatial samples)
+    transect: List[Dict[str, Any]] = []
+    if b_arr.ndim == 2 and b_arr.shape[0] > 0 and b_arr.shape[1] > 0:
+        row_valid_counts = np.sum(valid_mask, axis=1)
+        mid_r = (
+            int(np.argmax(row_valid_counts))
+            if np.max(row_valid_counts) > 0
+            else b_arr.shape[0] // 2
+        )
+        cols = b_arr.shape[1]
+        dx_m = abs(float(spacing_m[0])) if spacing_m and len(spacing_m) >= 1 else 20.0
+        n_samples = min(24, cols)
+        sample_cols = np.unique(np.linspace(0, cols - 1, n_samples, dtype=int))
+        for ci in sample_cols:
+            if valid_mask[mid_r, ci]:
+                bv_pt = float(b_arr[mid_r, ci])
+                av_pt = float(a_arr[mid_r, ci])
+                transect.append(
+                    {
+                        "step": int(ci),
+                        "offset_km": round(float(ci) * dx_m / 1000.0, 2),
+                        "before_db": round(bv_pt, 2),
+                        "after_db": round(av_pt, 2),
+                        "delta_db": round(av_pt - bv_pt, 2),
+                    }
+                )
+
+    return {
+        "comparison": comparison,
+        "backscatter_histogram": backscatter_histogram,
+        "delta_histogram": delta_histogram,
+        "condition_breakdown": condition_breakdown,
+        "transect": transect,
+    }
 
 
 def summarize_granule(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -467,7 +642,9 @@ def _execute_analysis_job(
             _run_insar_deformation_job(job_id, provider, config, params, fail)
             return
 
+        t_job_start = time.perf_counter()
         set_stage(job_id, "searching CMR catalogs", 20)
+        t_cmr_start = time.perf_counter()
         half = timedelta(days=SEARCH_HALF_WINDOW_DAYS)
         if aoi_bbox and len(aoi_bbox) == 4:
             bbox = [
@@ -476,8 +653,11 @@ def _execute_analysis_job(
                 max(float(aoi_bbox[2]), lon + 0.5),
                 max(float(aoi_bbox[3]), lat + 0.5),
             ]
+            fallback_bbox = bbox
         else:
-            bbox = [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]
+            # Tight point bbox first matches rotated GPolygons actually covering (lat, lon)
+            bbox = [lon - 0.04, lat - 0.04, lon + 0.04, lat + 0.04]
+            fallback_bbox = [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]
         before_g = after_g = None
         pair_info: Dict[str, Any] = {}
         used_short_name = None
@@ -485,17 +665,21 @@ def _execute_analysis_job(
 
         if auto_dates:
             end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
             for sn in resolve_short_names(dataset_id):
                 try:
-                    all_g = cache.cached_search(provider, sn, (start, end), bbox, count=50)
+                    all_g = cache.cached_search(provider, sn, (start, end), bbox, count=60)
+                    if not all_g and fallback_bbox != bbox:
+                        all_g = cache.cached_search(
+                            provider, sn, (start, end), fallback_bbox, count=60
+                        )
                 except Exception as e:
                     notes.append(f"{sn}: search error ({e})")
                     continue
                 dated = [(g, parse_granule_date(g)) for g in all_g]
                 dated = [(g, d) for g, d in dated if d is not None]
                 dated.sort(key=lambda t: t[1], reverse=True)
-                notes.append(f"{sn}: {len(dated)} granules in last 90 days")
+                notes.append(f"{sn}: {len(dated)} granules in last 180 days")
                 if not dated:
                     continue
                 covering = [(g, d) for g, d in dated if _granule_contains_point(g, lat, lon)]
@@ -523,26 +707,22 @@ def _execute_analysis_job(
                 break
         else:
             assert before_dt is not None and after_dt is not None
+            b_win_t = (
+                (before_dt - half).strftime("%Y-%m-%d"),
+                (before_dt + half).strftime("%Y-%m-%d"),
+            )
+            a_win_t = (
+                (after_dt - half).strftime("%Y-%m-%d"),
+                (after_dt + half).strftime("%Y-%m-%d"),
+            )
             for sn in resolve_short_names(dataset_id):
                 try:
-                    b_list = cache.cached_search(
-                        provider,
-                        sn,
-                        (
-                            (before_dt - half).strftime("%Y-%m-%d"),
-                            (before_dt + half).strftime("%Y-%m-%d"),
-                        ),
-                        bbox,
-                    )
-                    a_list = cache.cached_search(
-                        provider,
-                        sn,
-                        (
-                            (after_dt - half).strftime("%Y-%m-%d"),
-                            (after_dt + half).strftime("%Y-%m-%d"),
-                        ),
-                        bbox,
-                    )
+                    b_list = cache.cached_search(provider, sn, b_win_t, bbox)
+                    if not b_list and fallback_bbox != bbox:
+                        b_list = cache.cached_search(provider, sn, b_win_t, fallback_bbox)
+                    a_list = cache.cached_search(provider, sn, a_win_t, bbox)
+                    if not a_list and fallback_bbox != bbox:
+                        a_list = cache.cached_search(provider, sn, a_win_t, fallback_bbox)
                 except Exception as e:
                     notes.append(f"{sn}: search error ({e})")
                     continue
@@ -556,16 +736,38 @@ def _execute_analysis_job(
                     used_short_name = sn
                     break
 
+        cmr_search_s = round(time.perf_counter() - t_cmr_start, 2)
+
         if before_g is None or after_g is None:
+            avail_hint = ""
+            try:
+                end_h = datetime.now().strftime("%Y-%m-%d")
+                start_h = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+                sn0 = resolve_short_names(dataset_id)[0]
+                recent = cache.cached_search(provider, sn0, (start_h, end_h), bbox, count=40)
+                recent_dates = sorted(
+                    {d.strftime("%Y-%m-%d") for d in (parse_granule_date(g) for g in recent) if d},
+                    reverse=True,
+                )
+                if recent_dates:
+                    avail_hint = (
+                        f" Available pass dates near ({lat:.2f}, {lon:.2f}): "
+                        + ", ".join(recent_dates[:8])
+                        + "."
+                    )
+            except Exception:
+                pass
             fail(
                 "No pair of distinct NISAR granules found near "
                 f"({lat}, {lon}) for {before_date} / {after_date}. "
                 + " ".join(notes)
+                + avail_hint
                 + " NISAR science operations began in late 2025. Try dates >= 12 days "
-                "apart within the last 12 months."
+                "apart within available passes."
             )
             return
 
+        t_stream_start = time.perf_counter()
         set_stage(job_id, "streaming granule windows (1/2)", 45)
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -606,6 +808,8 @@ def _execute_analysis_job(
             )
             return
 
+        stream_s = round(time.perf_counter() - t_stream_start, 2)
+        t_compute_start = time.perf_counter()
         set_stage(job_id, f"computing backscatter difference ({speckle_filter})", 82)
 
         eps = 1e-9
@@ -796,11 +1000,13 @@ def _execute_analysis_job(
         except Exception:
             affected_area_km2 = None
 
+        a_aligned = np.asarray(after_ds["sigma0_db"].values, dtype=np.float64)
+
         set_stage(job_id, "rendering visual overlays", 93)
         images = renders.save_job_visuals(
             job_id=job_id,
             before_db=b_db,
-            after_db=a_db,
+            after_db=a_aligned,
             difference_db=difference_mask,
             x_coords=bx,
             y_coords=by,
@@ -835,6 +1041,16 @@ def _execute_analysis_job(
             valid_fraction=valid_fraction,
         )
         severity_level, _ = compute_severity_area_confidence(affected_area_km2, conf_score)
+
+        charts = compute_comparison_charts(
+            before_db=b_db,
+            after_db=a_aligned,
+            diff_db=difference_mask,
+            spacing_m=sp,
+            threshold_db=float(used_thr_val),
+        )
+        compute_s = round(time.perf_counter() - t_compute_start, 2)
+        total_s = round(time.perf_counter() - t_job_start, 2)
 
         result_payload = {
             "success": True,
@@ -886,6 +1102,17 @@ def _execute_analysis_job(
             "images": images,
             "raw_stats": raw_stats,
             "auxiliary_masks": aux_masks,
+            "comparison": charts["comparison"],
+            "backscatter_histogram": charts["backscatter_histogram"],
+            "delta_histogram": charts["delta_histogram"],
+            "condition_breakdown": charts["condition_breakdown"],
+            "transect": charts["transect"],
+            "timing": {
+                "cmr_search_s": cmr_search_s,
+                "stream_s": stream_s,
+                "compute_s": compute_s,
+                "total_s": total_s,
+            },
             "analysis": {
                 "mean_backscatter_difference_db": difference_result.get("mean_difference"),
                 "std_difference_db": difference_result.get("std_difference"),

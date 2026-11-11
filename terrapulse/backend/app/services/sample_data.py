@@ -25,8 +25,21 @@ def get_sample_nisar_result() -> Dict[str, Any]:
     n = 64
     x_coords = np.linspace(388000.0, 388000.0 + (n - 1) * 20.0, n)
     y_coords = np.linspace(9835000.0, 9835000.0 - (n - 1) * 20.0, n)
+    yy, xx = np.meshgrid(np.linspace(-1.0, 1.0, n), np.linspace(-1.0, 1.0, n), indexing="ij")
+    before_db = -8.4 + 1.1 * np.sin(xx * 3.0) + 0.7 * np.cos(yy * 2.5)
     diff = np.full((n, n), -0.3, dtype=np.float64)
     diff[16:42, 18:46] = -4.2
+    after_db = before_db + diff
+
+    from app.services.job_runner import compute_comparison_charts
+
+    charts = compute_comparison_charts(
+        before_db=before_db,
+        after_db=after_db,
+        diff_db=diff,
+        spacing_m=[20.0, 20.0],
+        threshold_db=-2.0,
+    )
 
     gj = export_geojson(
         diff,
@@ -101,6 +114,11 @@ def get_sample_nisar_result() -> Dict[str, Any]:
             "orbit_direction": "ascending",
         },
         "compatibility_check": {"compatible": True, "warnings": []},
+        "comparison": charts["comparison"],
+        "backscatter_histogram": charts["backscatter_histogram"],
+        "delta_histogram": charts["delta_histogram"],
+        "condition_breakdown": charts["condition_breakdown"],
+        "transect": charts["transect"],
         "analysis": {
             "mean_backscatter_difference_db": -0.99,
             "std_difference_db": 1.48,

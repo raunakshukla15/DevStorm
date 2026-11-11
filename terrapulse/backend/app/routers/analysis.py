@@ -1,7 +1,9 @@
 """Analysis submission and point-insights routes."""
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
+import time
 from typing import List, Optional
 import uuid
 
@@ -14,6 +16,7 @@ from app.schemas import (
     GranuleSummaryOut,
     JobStartResponse,
     LocationPoint,
+    PassSummaryOut,
     PointInsightsResponse,
 )
 from app.services import cache
@@ -216,9 +219,10 @@ async def point_insights(
     lon: float = Query(..., ge=-180, le=180, description="Clicked longitude"),
     dataset_id: str = Query("nisar_l2_gcov", description="Dataset id or CMR short name"),
 ):
-    """Fast, pixel-free insights for a clicked map point."""
+    """Fast, pixel-free insights + selectable passes for a clicked map point."""
+    t0 = time.perf_counter()
     provider = cache.get_provider()
-    if not provider.is_authenticated() and not provider.authenticate():
+    if not provider.is_authenticated() and not await asyncio.to_thread(provider.authenticate):
         raise HTTPException(
             status_code=401,
             detail=(
@@ -226,37 +230,95 @@ async def point_insights(
                 "NASA_EARTHDATA_USERNAME and NASA_EARTHDATA_PASSWORD in backend/.env."
             ),
         )
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    window_deg = 60.0 / 111.0
-    bbox = [lon - window_deg, lat - window_deg, lon + window_deg, lat + window_deg]
-    for sn in resolve_short_names(dataset_id):
+    now = datetime.now()
+    end = now.strftime("%Y-%m-%d")
+    start_180 = (now - timedelta(days=180)).strftime("%Y-%m-%d")
+    cutoff_90 = now - timedelta(days=90)
+    tight_deg = 0.05
+    wide_deg = 60.0 / 111.0
+    tight_bbox = [lon - tight_deg, lat - tight_deg, lon + tight_deg, lat + tight_deg]
+    wide_bbox = [lon - wide_deg, lat - wide_deg, lon + wide_deg, lat + wide_deg]
+
+    def _contains(g: dict) -> bool:
+        bb = g.get("bounding_box")
+        if not bb or len(bb) != 4:
+            return True
+        return bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]
+
+    short_names = resolve_short_names(dataset_id)
+    for sn in short_names:
         try:
-            granules = cache.cached_search(provider, sn, (start, end), bbox, count=20)
+            granules = await asyncio.to_thread(
+                cache.cached_search, provider, sn, (start_180, end), tight_bbox, 60
+            )
+            if not granules:
+                granules = await asyncio.to_thread(
+                    cache.cached_search, provider, sn, (start_180, end), wide_bbox, 60
+                )
         except Exception as e:
             logger.warning("point-insights search failed for %s: %s", sn, e)
             continue
         dated = [(g, parse_granule_date(g)) for g in granules]
         dated = [(g, d) for g, d in dated if d is not None]
-        dated.sort(key=lambda t: t[1], reverse=True)
+        # Prefer passes covering the exact clicked point cleanly, newest first.
+        dated.sort(key=lambda t: (1 if _contains(t[0]) else 0, t[1]), reverse=True)
         if dated:
-            latest = dated[0][0]
+            # Sort strictly newest -> oldest while deduplicating same date+orbit frames.
+            by_date_desc = sorted(
+                dated,
+                key=lambda t: (t[1], 1 if _contains(t[0]) else 0),
+                reverse=True,
+            )
+            seen_keys = set()
+            passes: List[PassSummaryOut] = []
+            for g, d in by_date_desc:
+                d_str = d.strftime("%Y-%m-%d")
+                orbit = (g.get("orbit_direction") or "unknown").lower()
+                k = (d_str, orbit)
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                passes.append(
+                    PassSummaryOut(
+                        id=g.get("id"),
+                        title=g.get("title"),
+                        date=d_str,
+                        acquisition_date=g.get("acquisition_date"),
+                        orbit_direction=orbit,
+                        covers_point=_contains(g),
+                    )
+                )
+
+            dated_only_desc = sorted(dated, key=lambda t: t[1], reverse=True)
+            latest = dated_only_desc[0][0]
+            earliest_dt = dated_only_desc[-1][1]
+            count_90d = sum(1 for _, d in dated if d >= cutoff_90)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             return PointInsightsResponse(
                 available=True,
                 location=LocationPoint(lat=lat, lon=lon),
                 short_name=sn,
-                granules_last_90d=len(dated),
-                latest_acquisition=dated[0][1].strftime("%Y-%m-%d"),
+                granules_last_90d=count_90d,
+                granules_last_180d=len(dated),
+                earliest_acquisition=earliest_dt.strftime("%Y-%m-%d"),
+                latest_acquisition=dated_only_desc[0][1].strftime("%Y-%m-%d"),
                 latest_granule=GranuleSummaryOut(**summarize_granule(latest)),
-                recent_acquisitions=[d.strftime("%Y-%m-%d") for _, d in dated[:6]],
+                recent_acquisitions=[p.date for p in passes[:12]],
+                available_passes=passes,
+                query_elapsed_ms=elapsed_ms,
                 supported_hazards=sorted(HAZARD_CONFIGS),
-                note="Pixel analysis runs as a background job via /analysis/hazard.",
+                note=(
+                    f"Live NASA CMR metadata ({len(passes)} unique pass dates over 180d) "
+                    f"retrieved in {elapsed_ms} ms. Pick Before & After passes to compute radar charts."
+                ),
             )
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
     return PointInsightsResponse(
         available=False,
         location=LocationPoint(lat=lat, lon=lon),
-        short_names_searched=resolve_short_names(dataset_id),
-        note="No NISAR granules near this point in the last 90 days. Try another location or a wider area.",
+        short_names_searched=short_names,
+        query_elapsed_ms=elapsed_ms,
+        note="No NISAR granules near this point in the last 180 days. Try another location or land area.",
     )
 
 
