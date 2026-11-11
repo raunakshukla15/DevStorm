@@ -1,7 +1,7 @@
 """Tests for comparison charts, 180-day point-insights passes, and HDF5 adapter streaming."""
 
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 import h5py
@@ -10,13 +10,13 @@ import pytest
 
 from app import db
 from app.main import app
-from app.services import cache as cache_svc, job_runner
+from app.services import cache as cache_svc, job_runner, nisar_provider
 from app.services.job_runner import (
     _build_date_differences,
     compute_comparison_charts,
     pick_before_to_latest_pair,
 )
-from app.services.nisar_provider import _H5DatasetAdapter
+from app.services.nisar_provider import NISARDataProvider, _H5DatasetAdapter, _PagedRangeFile
 
 
 def test_compute_comparison_charts_stats_and_bins():
@@ -69,6 +69,8 @@ def test_h5_dataset_adapter_supports_gcov_slicing(tmp_path):
         assert "HHHH" in adapter
         assert "xCoordinates" in adapter
         assert "HHHH" in adapter.data_vars
+        assert isinstance(adapter["HHHH"].attrs, dict)
+        assert adapter["HHHH"].dims == ("y", "x")
         assert int(adapter["projection"].attrs["epsg_code"]) == 32722
         sub = adapter["HHHH"].isel({"y": slice(4, 20, 2), "x": slice(2, 18, 2)}).values
         assert sub.shape == (8, 8)
@@ -298,3 +300,84 @@ def test_hazard_before_with_latest_after_api_and_runner(tmp_path, monkeypatch):
     assert res["date_differences"]["before_diff_days"] == 9
     assert res["date_differences"]["after_is_latest"] is True
     assert any(w[0][0] <= "2026-07-30" for w in searched_windows)
+
+
+def test_paged_range_file_and_cloudfront_resolution(monkeypatch):
+    payload = bytes(i % 256 for i in range(700))
+    mock_sess = MagicMock()
+
+    def fake_get(_url, headers=None, **_kwargs):
+        rng = headers["Range"].replace("bytes=", "")
+        start_s, end_s = rng.split("-")
+        start, end = int(start_s), int(end_s)
+        resp = MagicMock()
+        resp.content = payload[start : end + 1]
+        resp.raise_for_status.return_value = None
+        return resp
+
+    mock_sess.get.side_effect = fake_get
+    monkeypatch.setattr(nisar_provider, "_get_requests_session", lambda: mock_sess)
+
+    prf = _PagedRangeFile("https://example.com/file.h5", len(payload), page_size=8)
+    assert prf.readable() is True
+    assert prf.seekable() is True
+    assert prf.seek(0) == 0
+    assert prf.tell() == 0
+
+    buf1 = bytearray(6)
+    assert prf.readinto(buf1) == 6
+    assert buf1 == payload[:6]
+    # Second small read within the same 8-byte page hits cache without another HTTP call.
+    calls_before = mock_sess.get.call_count
+    buf2 = bytearray(2)
+    assert prf.readinto(buf2) == 2
+    assert buf2 == payload[6:8]
+    assert mock_sess.get.call_count == calls_before
+
+    # Test relative and end-relative seeking + large bypass read + >64 page eviction.
+    prf.seek(2, 1)
+    assert prf.tell() == 10
+    big_buf = bytearray(30)
+    assert prf.readinto(big_buf) == 30
+    assert big_buf == payload[10:40]
+
+    for p in range(66):
+        prf.seek(p * 8)
+        small = bytearray(4)
+        assert prf.readinto(small) == 4
+    assert len(prf._pages) <= 64
+
+    prf.seek(-4, 2)
+    tail = bytearray(10)
+    assert prf.readinto(tail) == 4
+    assert tail[:4] == payload[-4:]
+    assert prf.readinto(bytearray(4)) == 0
+
+    # CloudFront URL redirect resolver + TTL cache behavior.
+    nisar_provider._resolved_url_cache.clear()
+    cf_sess = MagicMock()
+    cf_resp_206 = MagicMock(
+        status_code=206,
+        headers={"Content-Range": "bytes 0-0/4096"},
+        url="https://d123.cloudfront.net/granule.h5?sig=abc",
+    )
+    cf_resp_200 = MagicMock(
+        status_code=200,
+        headers={"Content-Length": "2048"},
+        url="https://d123.cloudfront.net/granule2.h5",
+    )
+    cf_resp_fail = MagicMock(status_code=403, headers={}, url="")
+    cf_sess.get.side_effect = [cf_resp_206, cf_resp_200, cf_resp_fail]
+
+    with patch("earthaccess.get_requests_https_session", return_value=cf_sess):
+        res1 = NISARDataProvider._resolve_cloudfront_target("https://urs.example/g1.h5")
+        assert res1 == ("https://d123.cloudfront.net/granule.h5?sig=abc", 4096)
+        # Cached hit does not trigger another GET
+        assert NISARDataProvider._resolve_cloudfront_target("https://urs.example/g1.h5") == res1
+        assert cf_sess.get.call_count == 1
+
+        res2 = NISARDataProvider._resolve_cloudfront_target("https://urs.example/g2.h5")
+        assert res2 == ("https://d123.cloudfront.net/granule2.h5", 2048)
+
+        res3 = NISARDataProvider._resolve_cloudfront_target("https://urs.example/g3.h5")
+        assert res3 is None
