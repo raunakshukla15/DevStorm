@@ -410,156 +410,154 @@ def export_geotiff(
         }
 
 
+def build_affine_from_coords(
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+):
+    """Build a pixel-center Affine transform from 1-D x/y coordinate vectors."""
+    from affine import Affine
+
+    x_arr = np.asarray(x_coords, dtype=np.float64)
+    y_arr = np.asarray(y_coords, dtype=np.float64)
+    dx = float(x_arr[1] - x_arr[0]) if x_arr.size > 1 else 20.0
+    dy = float(y_arr[1] - y_arr[0]) if y_arr.size > 1 else -20.0
+    return Affine(dx, 0.0, float(x_arr[0]) - dx / 2.0, 0.0, dy, float(y_arr[0]) - dy / 2.0)
+
+
 def export_geojson(
     difference_mask: np.ndarray,
     transform=None,
     crs: str = "EPSG:4326",
     threshold: float = -3.0,
+    x_coords: Optional[np.ndarray] = None,
+    y_coords: Optional[np.ndarray] = None,
+    spacing_m: Optional[list] = None,
+    min_pixels: int = 4,
+    simplify_tolerance: float = 0.0001,
 ) -> Dict[str, Any]:
-    """
-    Export flood detection results as GeoJSON vector outlines.
+    """Export flood/change detection results as georeferenced EPSG:4326 GeoJSON polygons.
 
-    Creates polygons of areas where backscatter difference falls below threshold.
-
-    Args:
-        difference_mask: Masked difference array (after - before)
-        transform: Affine transform for georeferencing (optional)
-        crs: Coordinate reference system (default EPSG:4326)
-        threshold: Backscatter difference threshold for flood indication
-                  (negative values indicate potential flooding)
-
-    Returns:
-        GeoJSON dict with flood outlines
+    Filters out connected components smaller than ``min_pixels``, polygonizes the
+    mask in the granule's projected CRS via ``rasterio.features.shapes``,
+    reprojects polygons to WGS84 (EPSG:4326), and simplifies geometries.
     """
     try:
-        import numpy as onp
+        from affine import Affine
+        from pyproj import Transformer
+        from rasterio.features import shapes
+        from scipy import ndimage
+        from shapely.geometry import mapping, shape
+        from shapely.ops import transform as shapely_transform
 
-        # Create binary mask: potential flood where difference < threshold
-        # Use np.isnan to identify valid pixels, then check threshold
-        valid_mask = ~onp.isnan(difference_mask)
-        flood_mask = onp.where(valid_mask, difference_mask < threshold, False)
+        if difference_mask is None:
+            return {
+                "type": "FeatureCollection",
+                "features": [],
+                "metadata": {"threshold": threshold, "method": "backscatter_difference_flood", "total_pixels_checked": 0},
+            }
 
-        # If no flood pixels, return empty GeoJSON
-        if not onp.any(flood_mask):
+        valid_mask = ~np.isnan(difference_mask)
+        flood_mask = np.where(valid_mask, difference_mask < threshold, False)
+
+        if not np.any(flood_mask):
             return {
                 "type": "FeatureCollection",
                 "features": [],
                 "metadata": {
                     "threshold": threshold,
                     "method": "backscatter_difference_flood",
+                    "min_pixels": min_pixels,
                     "total_pixels_checked": int(valid_mask.sum()),
                 },
             }
 
-        # Simple approach: use connected components via scipy if available,
-        # otherwise return centroid-based features
-        try:
-            from scipy import ndimage
+        # Filter tiny connected components before polygonization (4-connectivity).
+        labeled, _ = ndimage.label(flood_mask)
+        counts = np.bincount(labeled.ravel())
+        keep_lut = counts >= max(1, int(min_pixels))
+        keep_lut[0] = False
+        clean_labeled = np.where(keep_lut[labeled], labeled, 0).astype(np.int32)
 
-            # Label connected components
-            labeled, num_features = ndimage.label(flood_mask)
-
-            features = []
-            for i in range(1, num_features + 1):
-                # Get component mask
-                component_mask = labeled == i
-
-                # Calculate centroid
-                cy, cx = onp.unravel_index(
-                    onp.argmax(component_mask), component_mask.shape
-                )
-
-                # Calculate area
-                area = int(component_mask.sum())
-
-                # Calculate mean difference within this component
-                component_diffs = difference_mask[component_mask]
-                mean_diff = float(onp.nanmean(component_diffs)) if component_diffs.size > 0 else 0.0
-
-                feature = {
-                    "type": "Feature",
-                    "properties": {
-                        "threshold": threshold,
-                        "mean_difference": mean_diff,
-                        "pixel_count": area,
-                        "flood_indicator": True,
-                    },
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [float(cx), float(cy)],
-                    },
-                }
-                features.append(feature)
-
-            geojson = {
+        if not np.any(clean_labeled):
+            return {
                 "type": "FeatureCollection",
-                "features": features,
+                "features": [],
                 "metadata": {
                     "threshold": threshold,
                     "method": "backscatter_difference_flood",
+                    "min_pixels": min_pixels,
                     "total_pixels_checked": int(valid_mask.sum()),
                 },
             }
 
-            logger.info("Exported GeoJSON with %d flood features", len(features))
-            return geojson
+        if transform is None:
+            if x_coords is not None and y_coords is not None:
+                transform = build_affine_from_coords(x_coords, y_coords)
+            else:
+                transform = Affine.identity()
 
-        except ImportError:
-            # Fallback without scipy: return a single feature at center of mass
-            # Calculate center of mass of flood pixels
-            flood_y, flood_x = onp.where(flood_mask)
-            
-            if len(flood_y) == 0:
-                return {
-                    "type": "FeatureCollection",
-                    "features": [],
-                    "metadata": {
-                        "threshold": threshold,
-                        "method": "backscatter_difference_flood",
-                        "total_pixels_checked": int(valid_mask.sum()),
-                    },
-                }
+        crs_norm = str(crs or "EPSG:4326").upper()
+        reproject = None
+        if crs_norm != "EPSG:4326":
+            transformer = Transformer.from_crs(crs_norm, "EPSG:4326", always_xy=True)
+            reproject = transformer.transform
 
-            # Compute centroid
-            cx = float(onp.mean(flood_x))
-            cy = float(onp.mean(flood_y))
-            area = len(flood_y)
+        features = []
+        for geom_dict, comp_val in shapes(clean_labeled, mask=(clean_labeled > 0), transform=transform):
+            cid = int(comp_val)
+            if cid <= 0:
+                continue
+            comp_mask = clean_labeled == cid
+            px_count = int(comp_mask.sum())
+            comp_vals = difference_mask[comp_mask]
+            mean_diff = float(np.nanmean(comp_vals))
+            min_diff = float(np.nanmin(comp_vals))
 
-            # Calculate mean difference within flood area
-            mean_diff = float(onp.nanmean(difference_mask[flood_mask])) if onp.any(flood_mask) else 0.0
+            if spacing_m and len(spacing_m) >= 2:
+                area_km2: Optional[float] = px_count * abs(float(spacing_m[0])) * abs(float(spacing_m[1])) / 1e6
+            elif crs_norm != "EPSG:4326":
+                area_km2 = px_count * abs(float(transform.a)) * abs(float(transform.e)) / 1e6
+            else:
+                area_km2 = None
 
-            feature = {
+            geom = shape(geom_dict)
+            if reproject is not None:
+                geom = shapely_transform(reproject, geom)
+            if simplify_tolerance > 0:
+                simplified = geom.simplify(simplify_tolerance, preserve_topology=True)
+                if not simplified.is_empty:
+                    geom = simplified
+
+            features.append({
                 "type": "Feature",
                 "properties": {
                     "threshold": threshold,
-                    "mean_difference": mean_diff,
-                    "pixel_count": area,
+                    "pixel_count": px_count,
+                    "area_km2": area_km2,
+                    "mean_difference_db": mean_diff,
+                    "min_difference_db": min_diff,
                     "flood_indicator": True,
                 },
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [cx, cy],
-                },
-            }
+                "geometry": mapping(geom),
+            })
 
-            geojson = {
-                "type": "FeatureCollection",
-                "features": [feature],
-                "metadata": {
-                    "threshold": threshold,
-                    "method": "backscatter_difference_flood",
-                    "total_pixels_checked": int(valid_mask.sum()),
-                },
-            }
-
-            logger.info(
-                "Exported GeoJSON with %d flood feature (centroid-based)",
-                len(geojson["features"]),
-            )
-            return geojson
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features,
+            "metadata": {
+                "threshold": threshold,
+                "method": "backscatter_difference_flood",
+                "crs": "EPSG:4326",
+                "source_crs": crs_norm,
+                "min_pixels": min_pixels,
+                "total_pixels_checked": int(valid_mask.sum()),
+            },
+        }
+        logger.info("Exported georeferenced GeoJSON with %d polygon features", len(features))
+        return geojson
 
     except Exception as e:
-        logger.error("GeoJSON export failed: %s", e)
+        logger.error("GeoJSON export failed: %s", e, exc_info=True)
         return {
             "type": "FeatureCollection",
             "features": [],
