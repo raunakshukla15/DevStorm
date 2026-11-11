@@ -14,6 +14,9 @@ export interface HazardMeta {
   label: string
   color: string
   defaultBand?: string
+  ruleBadge?: string
+  datasetLabel?: string
+  summary?: string
 }
 
 export interface Region {

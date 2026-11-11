@@ -13,7 +13,7 @@ import { Skeleton } from '../components/Skeleton'
 import { useJobPolling } from '../hooks/useJobPolling'
 import { usePrefsStore } from '../store/usePrefsStore'
 import { formatArea, formatPower } from '../utils/format'
-import { HAZARDS } from '../utils/geo'
+import { HAZARDS, hazardMeta } from '../utils/geo'
 
 const DEFAULT_BEFORE_DATE = '2026-08-10'
 
@@ -103,9 +103,15 @@ export default function ChangeAnalysis() {
     parsedLon >= -180 &&
     parsedLon <= 180
 
+  const activeDatasetId = hazard === 'deformation' ? 'nisar_l2_gunw' : 'nisar_l2_gcov'
   const passesQuery = useQuery({
-    queryKey: ['point-insights', Math.round(parsedLat * 100) / 100, Math.round(parsedLon * 100) / 100],
-    queryFn: () => fetchPointInsights(parsedLat, parsedLon),
+    queryKey: [
+      'point-insights',
+      Math.round(parsedLat * 100) / 100,
+      Math.round(parsedLon * 100) / 100,
+      activeDatasetId,
+    ],
+    queryFn: () => fetchPointInsights(parsedLat, parsedLon, activeDatasetId),
     enabled: validCoords,
     staleTime: 180000,
     retry: 0,
@@ -174,8 +180,7 @@ export default function ChangeAnalysis() {
     }
   }
 
-  const run = (e: FormEvent) => {
-    e.preventDefault()
+  const executeComparison = () => {
     const lat = Number.parseFloat(form.lat)
     const lon = Number.parseFloat(form.lon)
     if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) {
@@ -210,7 +215,7 @@ export default function ChangeAnalysis() {
       lon,
       beforeDate: auto ? undefined : form.before,
       afterDate: auto ? undefined : afterLatest ? 'latest' : form.after,
-      datasetId: hazard === 'deformation' ? 'nisar_l2_gunw' : 'nisar_l2_gcov',
+      datasetId: activeDatasetId,
       band,
       window: windowSize,
       bbox,
@@ -221,7 +226,14 @@ export default function ChangeAnalysis() {
     })
   }
 
+  const run = (e: FormEvent) => {
+    e.preventDefault()
+    executeComparison()
+  }
+
   const result = jobQuery.data?.result ?? (running ? null : storedLastResult)
+  const activeHazardMeta = hazardMeta(hazard)
+  const hazardMismatch = Boolean(result && result.hazard && result.hazard !== hazard && !running)
   const errorMessage =
     validationError ??
     (startMutation.error instanceof Error ? startMutation.error.message : null) ??
@@ -248,8 +260,51 @@ export default function ChangeAnalysis() {
 
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
-          <form onSubmit={run} className="bg-[#0c1424] p-5 rounded-xl border border-white/10 space-y-3">
+          <form onSubmit={run} className="tp-card bg-[#0c1424] p-5 rounded-xl border border-white/10 space-y-3">
             <HazardPicker value={hazard} onChange={onSelectHazard} />
+            {activeHazardMeta && (
+              <div
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs space-y-1.5"
+                data-testid="selected-hazard-summary"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: activeHazardMeta.color }}
+                    />
+                    <span className="font-semibold text-white">{activeHazardMeta.label} mode</span>
+                    {activeHazardMeta.ruleBadge && (
+                      <span className="rounded bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[11px] text-cyan-200">
+                        {activeHazardMeta.ruleBadge}
+                      </span>
+                    )}
+                    {activeHazardMeta.datasetLabel && (
+                      <span className="rounded bg-[#080f1d] border border-white/10 px-2 py-0.5 text-[11px] text-white/70">
+                        {activeHazardMeta.datasetLabel}
+                      </span>
+                    )}
+                  </div>
+                  {hazardMismatch && (
+                    <button
+                      type="button"
+                      disabled={running || startMutation.isPending}
+                      onClick={executeComparison}
+                      className="rounded-md bg-cyan-600 hover:bg-cyan-500 text-white tp-keep-white px-2.5 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                    >
+                      Run {activeHazardMeta.label} now
+                    </button>
+                  )}
+                </div>
+                {activeHazardMeta.summary && <p className="text-white/65">{activeHazardMeta.summary}</p>}
+                {hazardMismatch && result?.hazard_label && (
+                  <p className="text-[11px] text-amber-200">
+                    The result displayed below is from an earlier <strong>{result.hazard_label}</strong> run —
+                    click <strong>Run {activeHazardMeta.label} now</strong> or <strong>Compare ({activeHazardMeta.label})</strong> to run this mode.
+                  </p>
+                )}
+              </div>
+            )}
             {bbox && (
               <div className="flex items-center justify-between gap-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 px-3 py-1.5 text-xs text-cyan-200">
                 <span>AOI crop active: [{bbox.map((v) => v.toFixed(3)).join(', ')}]</span>
@@ -484,9 +539,11 @@ export default function ChangeAnalysis() {
             <button
               type="submit"
               disabled={running || startMutation.isPending}
-              className="w-full md:w-auto bg-blue-600 hover:bg-blue-500 rounded-lg px-8 py-2 text-sm font-semibold disabled:opacity-50"
+              className="w-full md:w-auto bg-blue-600 hover:bg-blue-500 text-white tp-keep-white rounded-lg px-8 py-2 text-sm font-semibold cursor-pointer disabled:opacity-50"
             >
-              {running || startMutation.isPending ? 'Working — results appear below' : 'Compare'}
+              {running || startMutation.isPending
+                ? 'Working — results appear below'
+                : `Compare (${activeHazardMeta?.label ?? hazard})`}
             </button>
           </form>
 
