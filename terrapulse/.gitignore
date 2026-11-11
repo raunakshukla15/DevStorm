@@ -2,24 +2,27 @@
 
 # Dependencies
 frontend/node_modules/
-backend/__pycache__/
-backend/*.pyc
+**/__pycache__/
+*.py[cod]
 backend/.venv/
 backend/venv/
 
 # Environment variables
 backend/.env
+frontend/.env
+frontend/.env.local
 
 # Frontend build artifacts
 frontend/dist/
 frontend/.vite/
 
-# Data files (large satellite data should not be committed)
+# Data & local outputs
 backend/data/
+*.tif
+*.tiff
+*.db
 
-# Sensitive credentials
-backend/.env
-
-# IDE/project specific
+# Testing & IDE
 .frontend/vscode/
 backend/.pytest_cache/
+**/.pytest_cache/
