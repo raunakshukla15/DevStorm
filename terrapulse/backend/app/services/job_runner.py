@@ -71,6 +71,38 @@ def _granule_contains_point(g: Dict[str, Any], lat: Optional[float], lon: Option
         return True
 
 
+def _granule_center_penalty(g: Dict[str, Any], lat: Optional[float], lon: Optional[float]) -> float:
+    if lat is None or lon is None:
+        return 0.0
+    bb = g.get("bounding_box")
+    if not bb or len(bb) != 4:
+        return 0.0
+    try:
+        cx = 0.5 * (float(bb[0]) + float(bb[2]))
+        cy = 0.5 * (float(bb[1]) + float(bb[3]))
+        return min(abs(cx - lon) + abs(cy - lat), 5.0) * 0.05
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _search_granules_window(
+    provider: Any,
+    short_name: str,
+    center_dt: datetime,
+    bbox: List[float],
+    fallback_bbox: List[float],
+    half_days: int,
+) -> List[Dict[str, Any]]:
+    win = (
+        (center_dt - timedelta(days=half_days)).strftime("%Y-%m-%d"),
+        (center_dt + timedelta(days=half_days)).strftime("%Y-%m-%d"),
+    )
+    items = cache.cached_search(provider, short_name, win, bbox)
+    if not items and fallback_bbox != bbox:
+        items = cache.cached_search(provider, short_name, win, fallback_bbox)
+    return items
+
+
 def pick_pair(
     b_list: List[Dict[str, Any]],
     a_list: List[Dict[str, Any]],
@@ -98,20 +130,130 @@ def pick_pair(
             oa = (ca.get("orbit_direction") or "unknown").lower()
             same_orbit = ob != "unknown" and ob == oa
             covers = _granule_contains_point(cb, lat, lon) and _granule_contains_point(ca, lat, lon)
-            center_penalty = 0.0
-            if lat is not None and lon is not None:
-                for cg in (cb, ca):
-                    bb = cg.get("bounding_box")
-                    if bb and len(bb) == 4:
-                        cx = 0.5 * (bb[0] + bb[2])
-                        cy = 0.5 * (bb[1] + bb[3])
-                        center_penalty += min(abs(cx - lon) + abs(cy - lat), 5.0) * 0.05
+            center_penalty = _granule_center_penalty(cb, lat, lon) + _granule_center_penalty(
+                ca, lat, lon
+            )
             score = err + (0 if same_orbit else 30) + (0 if covers else 1000) + center_penalty
             if best is None or score < best[0]:
                 best = (score, same_orbit, cb, ca)
     if best is None:
         return None, None
     return (best[2], best[3]), {"same_orbit": best[1]}
+
+
+def pick_before_to_latest_pair(
+    b_list: List[Dict[str, Any]],
+    recent_list: List[Dict[str, Any]],
+    before_dt: datetime,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+):
+    """Pick closest pass to ``before_dt`` paired with the newest available pass."""
+    dated_after = [(g, parse_granule_date(g)) for g in (recent_list or [])]
+    dated_after = [(g, d) for g, d in dated_after if d is not None]
+    if not dated_after or not b_list:
+        return None, None
+
+    dated_after.sort(key=lambda t: t[1], reverse=True)
+    covering_after = [t for t in dated_after if _granule_contains_point(t[0], lat, lon)]
+    newest_dt = (covering_after[0][1] if covering_after else dated_after[0][1]).date()
+    # Keep newest-day candidates first so AFTER stays anchored on the newest available pass
+    newest_day_pool = [t for t in (covering_after or dated_after) if t[1].date() == newest_dt]
+    a_candidates = newest_day_pool or (covering_after or dated_after)[:3]
+
+    best = None
+    for ca, da_dt in a_candidates:
+        ka = cache.granule_key(ca)
+        oa = (ca.get("orbit_direction") or "unknown").lower()
+        covers_a = _granule_contains_point(ca, lat, lon)
+        for cb in b_list:
+            kb = cache.granule_key(cb)
+            db_dt = parse_granule_date(cb)
+            if not kb or kb == ka or db_dt is None or da_dt <= db_dt:
+                continue
+            gap_days = (da_dt - db_dt).days
+            err = abs((db_dt - before_dt).days)
+            ob = (cb.get("orbit_direction") or "unknown").lower()
+            same_orbit = ob != "unknown" and ob == oa
+            covers = covers_a and _granule_contains_point(cb, lat, lon)
+            center_penalty = _granule_center_penalty(cb, lat, lon) + _granule_center_penalty(
+                ca, lat, lon
+            )
+            score = (
+                err
+                + (0 if gap_days >= 12 else 500)
+                + (0 if same_orbit else 30)
+                + (0 if covers else 1000)
+                + center_penalty
+            )
+            if best is None or score < best[0]:
+                best = (score, same_orbit, cb, ca)
+    if best is None:
+        return None, None
+    return (best[2], best[3]), {"same_orbit": best[1], "after_latest": True}
+
+
+def _build_date_differences(
+    requested_before: Optional[str],
+    requested_after: Optional[str],
+    before_g: Dict[str, Any],
+    after_g: Dict[str, Any],
+    *,
+    after_latest: bool = False,
+) -> Dict[str, Any]:
+    """Compare requested vs actual real acquisition dates and summarize ~12-day offsets."""
+    actual_b = str(before_g.get("acquisition_date") or "")[:10] or None
+    actual_a = str(after_g.get("acquisition_date") or "")[:10] or None
+
+    def _day_delta(req: Optional[str], act: Optional[str]) -> Optional[int]:
+        if not req or not act:
+            return None
+        try:
+            r_dt = datetime.strptime(req[:10], "%Y-%m-%d")
+            a_dt = datetime.strptime(act[:10], "%Y-%m-%d")
+            return (a_dt - r_dt).days
+        except ValueError:
+            return None
+
+    b_diff = _day_delta(requested_before, actual_b)
+    a_diff = None if after_latest else _day_delta(requested_after, actual_a)
+    b_differs = bool(b_diff is not None and b_diff != 0)
+    a_differs = bool(a_diff is not None and a_diff != 0)
+
+    parts: List[str] = []
+    if requested_before and actual_b:
+        if b_diff == 0:
+            parts.append(f"Before pass matched {requested_before} exactly.")
+        elif b_diff is not None:
+            sign = "+" if b_diff > 0 else ""
+            parts.append(
+                f"Before requested {requested_before}; real pass used {actual_b} ({sign}{b_diff}d due to ~12-day NISAR repeat)."
+            )
+    if actual_a:
+        if after_latest:
+            parts.append(f"After used newest available NASA CMR pass ({actual_a}).")
+        elif requested_after:
+            if a_diff == 0:
+                parts.append(f"After pass matched {requested_after} exactly.")
+            elif a_diff is not None:
+                sign = "+" if a_diff > 0 else ""
+                parts.append(
+                    f"After requested {requested_after}; real pass used {actual_a} ({sign}{a_diff}d due to ~12-day NISAR repeat)."
+                )
+
+    return {
+        "requested_before": requested_before,
+        "actual_before": actual_b,
+        "before_diff_days": b_diff,
+        "before_differs": b_differs,
+        "requested_after": "latest (auto)" if after_latest else requested_after,
+        "actual_after": actual_a,
+        "after_diff_days": a_diff,
+        "after_differs": a_differs,
+        "after_is_latest": after_latest,
+        "any_differs": b_differs or a_differs or after_latest,
+        "note": " ".join(parts) if parts else None,
+    }
 
 
 def compute_comparison_charts(
@@ -555,9 +697,18 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
         fail(f"Unknown hazard '{hazard}'. Supported: {sorted(HAZARD_CONFIGS)}.")
         return
 
-    before_date = params.get("before_date")
-    after_date = params.get("after_date")
-    auto_dates = not before_date or not after_date
+    raw_before = (params.get("before_date") or "").strip() or None
+    if raw_before and raw_before.lower() == "auto":
+        raw_before = None
+    raw_after = (params.get("after_date") or "").strip() or None
+    after_latest = bool(raw_before and (not raw_after or raw_after.lower() in {"latest", "auto"}))
+    before_date = raw_before
+    after_date = None if (not raw_after or raw_after.lower() in {"latest", "auto"}) else raw_after
+    auto_dates = not before_date or after_latest
+    if after_date and not before_date:
+        fail("after_date requires before_date (or omit both for auto latest pair).")
+        return
+
     lat, lon = float(params["lat"]), float(params["lon"])
     aoi_bbox = params.get("bbox")
     dataset_id = params.get("dataset_id") or config.get("dataset_id") or "nisar_l2_gcov"
@@ -569,14 +720,15 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
     req_window = max(64, min(int(params.get("window") or 256), MAX_WINDOW_PIXELS))
     before_dt = after_dt = None
 
-    if not auto_dates:
+    if before_date:
         try:
             before_dt = datetime.strptime(before_date, "%Y-%m-%d")
-            after_dt = datetime.strptime(after_date, "%Y-%m-%d")
+            if after_date:
+                after_dt = datetime.strptime(after_date, "%Y-%m-%d")
         except (ValueError, TypeError):
-            fail("Invalid date format. Use YYYY-MM-DD for both dates, or omit both for auto.")
+            fail("Invalid date format. Use YYYY-MM-DD (or 'latest' for after_date).")
             return
-        if after_dt <= before_dt:
+        if after_dt is not None and after_dt <= before_dt:
             fail("After date must be after before date.")
             return
 
@@ -591,6 +743,7 @@ def run_analysis_job(job_id: str, params: Dict[str, Any]) -> None:
             before_dt=before_dt,
             after_dt=after_dt,
             auto_dates=auto_dates,
+            after_latest=after_latest,
             lat=lat,
             lon=lon,
             aoi_bbox=aoi_bbox,
@@ -616,6 +769,7 @@ def _execute_analysis_job(
     before_dt: Optional[datetime],
     after_dt: Optional[datetime],
     auto_dates: bool,
+    after_latest: bool,
     lat: float,
     lon: float,
     aoi_bbox: Any,
@@ -645,7 +799,6 @@ def _execute_analysis_job(
         t_job_start = time.perf_counter()
         set_stage(job_id, "searching CMR catalogs", 20)
         t_cmr_start = time.perf_counter()
-        half = timedelta(days=SEARCH_HALF_WINDOW_DAYS)
         if aoi_bbox and len(aoi_bbox) == 4:
             bbox = [
                 min(float(aoi_bbox[0]), lon - 0.5),
@@ -663,7 +816,51 @@ def _execute_analysis_job(
         used_short_name = None
         notes: List[str] = []
 
-        if auto_dates:
+        requested_before = before_date
+        requested_after_display = "latest (auto)" if after_latest else after_date
+
+        if after_latest:
+            assert before_dt is not None
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            recent_start_dt = max(
+                before_dt + timedelta(days=1), datetime.now() - timedelta(days=180)
+            )
+            recent_win = (recent_start_dt.strftime("%Y-%m-%d"), today_str)
+            for sn in resolve_short_names(dataset_id):
+                try:
+                    b_list = _search_granules_window(
+                        provider, sn, before_dt, bbox, fallback_bbox, SEARCH_HALF_WINDOW_DAYS
+                    )
+                    if not b_list:
+                        b_list = _search_granules_window(
+                            provider, sn, before_dt, bbox, fallback_bbox, 12
+                        )
+                    a_list = cache.cached_search(provider, sn, recent_win, bbox, count=60)
+                    if not a_list and fallback_bbox != bbox:
+                        a_list = cache.cached_search(
+                            provider, sn, recent_win, fallback_bbox, count=60
+                        )
+                except Exception as e:
+                    notes.append(f"{sn}: search error ({e})")
+                    continue
+                notes.append(
+                    f"{sn}: {len(b_list)} near {before_date} (+/-12d), {len(a_list)} latest-window granules"
+                )
+                picked, info = pick_before_to_latest_pair(
+                    b_list, a_list, before_dt, lat=lat, lon=lon
+                )
+                if picked is not None:
+                    before_g, after_g = picked
+                    pair_info = info or {}
+                    used_short_name = sn
+                    b_act_dt = parse_granule_date(before_g)
+                    a_act_dt = parse_granule_date(after_g)
+                    if b_act_dt is not None:
+                        before_date = b_act_dt.strftime("%Y-%m-%d")
+                    if a_act_dt is not None:
+                        after_date = a_act_dt.strftime("%Y-%m-%d")
+                    break
+        elif auto_dates:
             end = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
             for sn in resolve_short_names(dataset_id):
@@ -707,22 +904,22 @@ def _execute_analysis_job(
                 break
         else:
             assert before_dt is not None and after_dt is not None
-            b_win_t = (
-                (before_dt - half).strftime("%Y-%m-%d"),
-                (before_dt + half).strftime("%Y-%m-%d"),
-            )
-            a_win_t = (
-                (after_dt - half).strftime("%Y-%m-%d"),
-                (after_dt + half).strftime("%Y-%m-%d"),
-            )
             for sn in resolve_short_names(dataset_id):
                 try:
-                    b_list = cache.cached_search(provider, sn, b_win_t, bbox)
-                    if not b_list and fallback_bbox != bbox:
-                        b_list = cache.cached_search(provider, sn, b_win_t, fallback_bbox)
-                    a_list = cache.cached_search(provider, sn, a_win_t, bbox)
-                    if not a_list and fallback_bbox != bbox:
-                        a_list = cache.cached_search(provider, sn, a_win_t, fallback_bbox)
+                    b_list = _search_granules_window(
+                        provider, sn, before_dt, bbox, fallback_bbox, SEARCH_HALF_WINDOW_DAYS
+                    )
+                    if not b_list:
+                        b_list = _search_granules_window(
+                            provider, sn, before_dt, bbox, fallback_bbox, 12
+                        )
+                    a_list = _search_granules_window(
+                        provider, sn, after_dt, bbox, fallback_bbox, SEARCH_HALF_WINDOW_DAYS
+                    )
+                    if not a_list:
+                        a_list = _search_granules_window(
+                            provider, sn, after_dt, bbox, fallback_bbox, 12
+                        )
                 except Exception as e:
                     notes.append(f"{sn}: search error ({e})")
                     continue
@@ -767,6 +964,14 @@ def _execute_analysis_job(
             )
             return
 
+        date_differences = _build_date_differences(
+            requested_before,
+            requested_after_display,
+            before_g,
+            after_g,
+            after_latest=after_latest,
+        )
+
         t_stream_start = time.perf_counter()
         set_stage(job_id, "streaming granule windows (1/2)", 45)
         try:
@@ -790,7 +995,16 @@ def _execute_analysis_job(
                     "status": "metadata_only",
                     "method": "backscatter_difference_flood_indicator",
                     "data_source": "NASA-ISRO NISAR via NASA Earthdata (live CMR metadata)",
-                    "requested_dates": {"before": before_date, "after": after_date},
+                    "requested_dates": {
+                        "before": requested_before,
+                        "after": requested_after_display,
+                    },
+                    "auto_dates": auto_dates,
+                    "actual_granule_dates": {
+                        "before": before_g.get("acquisition_date"),
+                        "after": after_g.get("acquisition_date"),
+                    },
+                    "date_differences": date_differences,
                     "location": {"lat": lat, "lon": lon},
                     "short_name": used_short_name,
                     "before_granule": summarize_granule(before_g),
@@ -1060,12 +1274,16 @@ def _execute_analysis_job(
             "hazard_label": config["label"],
             "interpretation": config["interpretation"],
             "data_source": "NASA-ISRO NISAR via NASA Earthdata (live granules, windowed streaming)",
-            "requested_dates": {"before": before_date, "after": after_date},
+            "requested_dates": {
+                "before": requested_before,
+                "after": requested_after_display,
+            },
             "auto_dates": auto_dates,
             "actual_granule_dates": {
                 "before": before_g.get("acquisition_date"),
                 "after": after_g.get("acquisition_date"),
             },
+            "date_differences": date_differences,
             "same_orbit_pair": same_orbit,
             "location": {"lat": lat, "lon": lon},
             "bbox": aoi_bbox,

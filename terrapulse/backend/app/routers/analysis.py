@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
@@ -29,11 +29,54 @@ from app.services.hazards import (
 )
 from app.services.job_runner import parse_granule_date, run_analysis_job, summarize_granule
 from app.services.nisar_provider import MAX_WINDOW_PIXELS
-from app.services.sample_data import get_sample_nisar_result
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analysis"])
+
+
+def _normalize_analysis_dates(
+    before_date: Optional[str],
+    after_date: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize and validate optional before/after dates (supports before + 'latest' auto)."""
+    clean_b = (before_date or "").strip() or None
+    if clean_b and clean_b.lower() == "auto":
+        clean_b = None
+
+    clean_a = (after_date or "").strip() or None
+    if clean_a and clean_a.lower() in {"latest", "auto"}:
+        clean_a = None
+
+    if clean_a and not clean_b:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Provide both dates, before_date alone (after=latest), "
+                "or omit both for auto latest pair."
+            ),
+        )
+
+    b_dt = a_dt = None
+    if clean_b:
+        try:
+            b_dt = datetime.strptime(clean_b, "%Y-%m-%d")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid before_date format: {e}. Use YYYY-MM-DD.",
+            )
+    if clean_a:
+        try:
+            a_dt = datetime.strptime(clean_a, "%Y-%m-%d")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid after_date format: {e}. Use YYYY-MM-DD.",
+            )
+    if b_dt and a_dt and a_dt <= b_dt:
+        raise HTTPException(status_code=400, detail="After date must be after before date.")
+    return clean_b, clean_a
 
 
 @router.post(
@@ -44,8 +87,14 @@ router = APIRouter(tags=["analysis"])
 )
 async def change_detection(
     background_tasks: BackgroundTasks,
-    before_date: str = Query(..., description="Target before date (YYYY-MM-DD)"),
-    after_date: str = Query(..., description="Target after date (YYYY-MM-DD)"),
+    before_date: Optional[str] = Query(
+        None,
+        description="Target before date (YYYY-MM-DD); omit both for auto pair",
+    ),
+    after_date: Optional[str] = Query(
+        None,
+        description="Target after date (YYYY-MM-DD, or omit/'latest' for newest pass)",
+    ),
     lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
     lon: float = Query(..., ge=-180, le=180, description="Center longitude"),
     dataset_id: str = Query("nisar_l2_gcov", description="Dataset id or CMR short name"),
@@ -53,22 +102,14 @@ async def change_detection(
     window: int = Query(256, ge=64, le=MAX_WINDOW_PIXELS, description="Window size in pixels"),
 ):
     """Start a live NISAR flood-indicator analysis as a background job."""
-    try:
-        before_dt = datetime.strptime(before_date, "%Y-%m-%d")
-        after_dt = datetime.strptime(after_date, "%Y-%m-%d")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid date format: {e}. Use YYYY-MM-DD format.",
-        )
-    if after_dt <= before_dt:
-        raise HTTPException(status_code=400, detail="After date must be after before date.")
+    clean_b, clean_a = _normalize_analysis_dates(before_date, after_date)
+    stored_after = clean_a if clean_a else ("latest" if clean_b else None)
 
     job_id = uuid.uuid4().hex[:12]
     params = {
         "hazard": "flood",
-        "before_date": before_date,
-        "after_date": after_date,
+        "before_date": clean_b,
+        "after_date": stored_after,
         "lat": lat,
         "lon": lon,
         "dataset_id": dataset_id,
@@ -124,7 +165,10 @@ async def hazard_analysis(
     before_date: Optional[str] = Query(
         None, description="Target before date (YYYY-MM-DD); omit both for auto latest pair"
     ),
-    after_date: Optional[str] = Query(None, description="Target after date (YYYY-MM-DD)"),
+    after_date: Optional[str] = Query(
+        None,
+        description="Target after date (YYYY-MM-DD, or omit/'latest' for newest pass)",
+    ),
     dataset_id: Optional[str] = Query(None, description="Dataset id or CMR short name"),
     band: Optional[str] = Query(None, description="Polarization band: HH | HV | VV | HH/HV"),
     window: int = Query(256, ge=64, le=MAX_WINDOW_PIXELS, description="Window size in pixels"),
@@ -145,19 +189,8 @@ async def hazard_analysis(
             status_code=400,
             detail=f"Unknown hazard '{hazard}'. Supported: {sorted(HAZARD_CONFIGS)}.",
         )
-    if bool(before_date) != bool(after_date):
-        raise HTTPException(
-            status_code=400,
-            detail="Provide both dates or neither (neither = auto latest pair).",
-        )
-    if before_date and after_date:
-        try:
-            b = datetime.strptime(before_date, "%Y-%m-%d")
-            a = datetime.strptime(after_date, "%Y-%m-%d")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {e}.")
-        if a <= b:
-            raise HTTPException(status_code=400, detail="After date must be after before date.")
+    clean_b, clean_a = _normalize_analysis_dates(before_date, after_date)
+    stored_after = clean_a if clean_a else ("latest" if clean_b else None)
 
     cfg = HAZARD_CONFIGS[hazard]
     chosen_band = (band or cfg.get("default_band") or "HH").upper()
@@ -184,8 +217,8 @@ async def hazard_analysis(
     job_id = uuid.uuid4().hex[:12]
     params = {
         "hazard": hazard,
-        "before_date": before_date,
-        "after_date": after_date,
+        "before_date": clean_b,
+        "after_date": stored_after,
         "lat": lat,
         "lon": lon,
         "dataset_id": chosen_dataset,
@@ -320,15 +353,6 @@ async def point_insights(
         query_elapsed_ms=elapsed_ms,
         note="No NISAR granules near this point in the last 180 days. Try another location or land area.",
     )
-
-
-@router.get(
-    "/analysis/sample",
-    summary="Guided sample NISAR result payload",
-)
-async def get_sample_analysis():
-    """Return a cached, explicitly labeled sample NISAR L2 GCOV indicator payload."""
-    return get_sample_nisar_result()
 
 
 @router.get(

@@ -169,8 +169,8 @@ def test_renders_exports_and_sse(tmp_path, monkeypatch):
         assert "complete" in sse_res.text
 
         sample_res = client.get("/api/v1/analysis/sample")
-        assert sample_res.status_code == 200
-        assert sample_res.json()["is_sample"] is True
+        assert sample_res.json().get("status") == "not_found"
+        assert "is_sample" not in sample_res.json()
 
 
 def test_aoi_crud_and_events_live_mocked(tmp_path, monkeypatch):
