@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy: #0a0e20;
+  --color-dark: #0d1117;
+}
+
+body {
+  background-color: #0a0e20;
+  color: #fff;
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media print {
+  aside, header { display: none !important; }
+  main { overflow: visible !important; }
+  body { background: #fff; color: #000; }
+}

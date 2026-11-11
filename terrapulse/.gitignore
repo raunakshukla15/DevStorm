@@ -1,0 +1,25 @@
+# TerraPulse - .gitignore
+
+# Dependencies
+frontend/node_modules/
+backend/__pycache__/
+backend/*.pyc
+backend/.venv/
+backend/venv/
+
+# Environment variables
+backend/.env
+
+# Frontend build artifacts
+frontend/dist/
+frontend/.vite/
+
+# Data files (large satellite data should not be committed)
+backend/data/
+
+# Sensitive credentials
+backend/.env
+
+# IDE/project specific
+.frontend/vscode/
+backend/.pytest_cache/
