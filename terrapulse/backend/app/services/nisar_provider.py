@@ -10,14 +10,17 @@ Follows the provider abstraction pattern defined in the project spec.
 
 import os
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Iterator
 from pathlib import Path
 
 import earthaccess
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+MAX_WINDOW_PIXELS = 512
 
 
 class NISARDataProvider:
@@ -416,37 +419,16 @@ class NISARDataProvider:
                 "note": "Could not load observation. Check data access and format compatibility."
             }
     
-    def stream_backscatter_window(
-        self,
-        https_url: str,
-        band: str = "HH",
-        window: int = 256,
-    ) -> Dict[str, Any]:
-        """Stream a small center window of a co-pol backscatter layer.
-
-        Reads ONLY a ``window`` x ``window`` patch via HTTPS range requests —
-        the full (often multi-GB) product is never downloaded. Requires prior
-        Earthdata authentication (uses ``earthaccess``' session).
-
-        Returns dict with ``values`` (2D float64 numpy array in dB or linear
-        power, as stored), ``variable`` (source layer name), ``shape``
-        (full layer shape) and ``window``. Raises RuntimeError with a clear
-        reason when streaming/processing is not possible.
-        """
-        import numpy as _np
-
-        if not https_url:
-            raise RuntimeError("No HTTPS access URL for this granule.")
-        if not self.is_authenticated():
-            if not self.authenticate():
-                raise RuntimeError(
-                    "Earthdata authentication required for streaming."
-                )
-
+    @contextmanager
+    def _open_gcov_grid(self, https_url: str) -> Iterator[Any]:
+        """Open only the NISAR GCOV frequencyA grid group via authenticated HTTPS."""
         try:
             import xarray as xr
         except ImportError as e:
             raise RuntimeError(f"xarray is required for streaming: {e}")
+
+        if not self.is_authenticated() and not self.authenticate():
+            raise RuntimeError("Earthdata authentication required for streaming.")
 
         try:
             fs = earthaccess.get_fsspec_https_session()
@@ -456,9 +438,7 @@ class NISARDataProvider:
         fobj = None
         try:
             fobj = fs.open(https_url, mode="rb")
-            # Open ONLY the GCOV grid group. Never open_datatree() the whole
-            # file: xarray recursively walks every HDF5 group, which is
-            # thousands of tiny HTTPS range requests (effectively hangs).
+            # Open ONLY the GCOV grid group; open_datatree() walks every HDF5 group.
             ds = None
             last_err = None
             for gp in (
@@ -485,79 +465,182 @@ class NISARDataProvider:
                 raise RuntimeError(
                     f"Could not open GCOV grid group in product: {last_err}"
                 )
-
-            # Pick a co-pol layer: prefer HHHH (HH power), then any *HH* 2D var,
-            # then the first 2D float variable available.
-            candidates = []
-            for name, var in ds.data_vars.items():
-                try:
-                    if len(var.dims) == 2:
-                        candidates.append(name)
-                except Exception:
-                    continue
-            if not candidates:
-                raise RuntimeError(
-                    f"No 2D data variables found in group "
-                    f"(available: {sorted(map(str, ds.data_vars))[:20]})"
-                )
-            band_up = (band or "HH").upper()
-            preferred = [f"{band_up}{band_up}{band_up}{band_up}",  # e.g. HHHH
-                         f"{band_up}{band_up}"]                     # e.g. HH
-            chosen = None
-            for p in preferred:
-                if p in candidates:
-                    chosen = p
-                    break
-            if chosen is None:
-                for c in candidates:
-                    if band_up in str(c).upper():
-                        chosen = c
-                        break
-            if chosen is None:
-                chosen = candidates[0]
-
-            da = ds[chosen]
-            shape = tuple(int(s) for s in da.shape)
-            rows, cols = shape[-2], shape[-1]
-            w = max(16, min(int(window), rows, cols))
-            r0 = max(0, (rows - w) // 2)
-            c0 = max(0, (cols - w) // 2)
-            patch = da.isel({da.dims[-2]: slice(r0, r0 + w),
-                             da.dims[-1]: slice(c0, c0 + w)})
-            values = np.asarray(patch.values, dtype=np.float64)
-
-            # Ground spacing (meters) for honest affected-area computation
-            spacing_m = None
-            try:
-                sx = float(np.asarray(ds["xCoordinateSpacing"].values).ravel()[0])
-                sy = float(np.asarray(ds["yCoordinateSpacing"].values).ravel()[0])
-                if sx > 0 and sy > 0:
-                    spacing_m = [abs(sx), abs(sy)]
-            except Exception:
-                pass
-
-            logger.info(
-                "Streamed %dx%d window of '%s' (full %s, spacing %s) from %s",
-                w, w, chosen, shape, spacing_m, https_url.split("/")[-1],
-            )
-            return {
-                "values": values,
-                "variable": str(chosen),
-                "shape": shape,
-                "window": w,
-                "window_origin": [r0, c0],
-                "spacing_m": spacing_m,
-            }
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Windowed streaming failed: {e}")
+            yield ds
         finally:
             try:
                 if fobj is not None:
                     fobj.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _extract_epsg(ds: Any) -> int:
+        """Extract the integer EPSG code from a NISAR GCOV grid dataset."""
+        if "projection" in ds:
+            proj = ds["projection"]
+            for attr_key in ("epsg_code", "epsg"):
+                val = proj.attrs.get(attr_key)
+                if val is not None:
+                    return int(val)
+            try:
+                arr = np.asarray(proj.values).ravel()
+                if arr.size > 0 and int(arr[0]) > 0:
+                    return int(arr[0])
+            except Exception:
+                pass
+        for attr_key in ("epsg_code", "epsg"):
+            val = ds.attrs.get(attr_key)
+            if val is not None:
+                return int(val)
+        raise RuntimeError(
+            "Could not determine projection EPSG code from GCOV grid group."
+        )
+
+    @staticmethod
+    def _select_pol_variable(ds: Any, band: str) -> str:
+        """Select the 2D backscatter variable matching the requested polarization."""
+        candidates = []
+        for name, var in ds.data_vars.items():
+            try:
+                if len(var.dims) == 2:
+                    candidates.append(str(name))
+            except Exception:
+                continue
+        if not candidates:
+            raise RuntimeError(
+                f"No 2D data variables found in group "
+                f"(available: {sorted(map(str, ds.data_vars))[:20]})"
+            )
+        band_up = (band or "HH").upper()
+        preferred = [f"{band_up}{band_up}{band_up}{band_up}", f"{band_up}{band_up}"]
+        for p in preferred:
+            if p in candidates:
+                return p
+        for c in candidates:
+            if band_up in c.upper():
+                return c
+        non_aux = [
+            c for c in candidates
+            if c not in {"mask", "inputDataExceptionMask", "numberOfLooks", "rtcGammaToSigmaFactor"}
+        ]
+        return non_aux[0] if non_aux else candidates[0]
+
+    def stream_backscatter_window(
+        self,
+        https_url: str,
+        band: str = "HH",
+        window: int = 256,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Stream a location-centered window of a co-pol backscatter layer.
+
+        Reads ONLY a ``window`` x ``window`` patch via HTTPS range requests —
+        the full (often multi-GB) product is never downloaded. When ``lat`` and
+        ``lon`` are provided, transforms them into the granule's projected CRS
+        using ``xCoordinates``, ``yCoordinates`` and ``projection`` EPSG, checks
+        footprint bounds, and slices around the nearest grid cell.
+        """
+        if not https_url:
+            raise RuntimeError("No HTTPS access URL for this granule.")
+        req_window = int(window)
+        if req_window < 1 or req_window > MAX_WINDOW_PIXELS:
+            raise ValueError(
+                f"window must be between 1 and {MAX_WINDOW_PIXELS} pixels (got {req_window})."
+            )
+
+        try:
+            with self._open_gcov_grid(https_url) as ds:
+                chosen = self._select_pol_variable(ds, band)
+                da = ds[chosen]
+                shape = tuple(int(s) for s in da.shape)
+                rows, cols = shape[-2], shape[-1]
+                w = min(req_window, rows, cols)
+
+                if "xCoordinates" not in ds or "yCoordinates" not in ds:
+                    raise RuntimeError(
+                        "Granule grid group is missing xCoordinates or yCoordinates."
+                    )
+                x_coords = np.asarray(ds["xCoordinates"].values, dtype=np.float64)
+                y_coords = np.asarray(ds["yCoordinates"].values, dtype=np.float64)
+                if x_coords.shape[0] != cols or y_coords.shape[0] != rows:
+                    raise RuntimeError(
+                        f"Coordinate length mismatch: x={x_coords.shape[0]} vs cols={cols}, "
+                        f"y={y_coords.shape[0]} vs rows={rows}."
+                    )
+
+                epsg_code = self._extract_epsg(ds)
+                crs_str = f"EPSG:{epsg_code}"
+
+                # Determine pixel spacing (meters) from metadata or coordinate steps
+                spacing_m = None
+                try:
+                    sx = float(np.asarray(ds["xCoordinateSpacing"].values).ravel()[0])
+                    sy = float(np.asarray(ds["yCoordinateSpacing"].values).ravel()[0])
+                    if sx != 0 and sy != 0:
+                        spacing_m = [abs(sx), abs(sy)]
+                except Exception:
+                    pass
+                if spacing_m is None and len(x_coords) > 1 and len(y_coords) > 1:
+                    dx = abs(float(x_coords[1] - x_coords[0]))
+                    dy = abs(float(y_coords[1] - y_coords[0]))
+                    if dx > 0 and dy > 0:
+                        spacing_m = [dx, dy]
+
+                half_dx = (spacing_m[0] / 2.0) if spacing_m else 10.0
+                half_dy = (spacing_m[1] / 2.0) if spacing_m else 10.0
+
+                if lat is not None and lon is not None:
+                    from pyproj import Transformer
+
+                    transformer = Transformer.from_crs("EPSG:4326", crs_str, always_xy=True)
+                    target_x, target_y = transformer.transform(float(lon), float(lat))
+                    x_min = float(np.min(x_coords)) - half_dx
+                    x_max = float(np.max(x_coords)) + half_dx
+                    y_min = float(np.min(y_coords)) - half_dy
+                    y_max = float(np.max(y_coords)) + half_dy
+                    if not (x_min <= target_x <= x_max and y_min <= target_y <= y_max):
+                        raise ValueError(
+                            f"Point ({lat}, {lon}) is outside granule footprint "
+                            f"(projected x={target_x:.1f} m, y={target_y:.1f} m vs "
+                            f"x=[{x_min:.1f}, {x_max:.1f}], y=[{y_min:.1f}, {y_max:.1f}] in {crs_str})."
+                        )
+                    cx = int(np.abs(x_coords - target_x).argmin())
+                    cy = int(np.abs(y_coords - target_y).argmin())
+                    r0 = max(0, min(rows - w, cy - w // 2))
+                    c0 = max(0, min(cols - w, cx - w // 2))
+                else:
+                    r0 = max(0, (rows - w) // 2)
+                    c0 = max(0, (cols - w) // 2)
+
+                patch = da.isel({
+                    da.dims[-2]: slice(r0, r0 + w),
+                    da.dims[-1]: slice(c0, c0 + w),
+                })
+                values = np.asarray(patch.values, dtype=np.float64)
+                x_win = x_coords[c0 : c0 + w]
+                y_win = y_coords[r0 : r0 + w]
+
+                logger.info(
+                    "Streamed %dx%d window of '%s' at origin=(%d,%d) in %s (full %s) from %s",
+                    w, w, chosen, r0, c0, crs_str, shape, https_url.split("/")[-1],
+                )
+                return {
+                    "values": values,
+                    "variable": str(chosen),
+                    "shape": shape,
+                    "window": w,
+                    "window_origin": [r0, c0],
+                    "spacing_m": spacing_m,
+                    "x_coords": x_win,
+                    "y_coords": y_win,
+                    "epsg": epsg_code,
+                    "crs": crs_str,
+                }
+        except (RuntimeError, ValueError):
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Windowed streaming failed: {e}")
 
     def get_product_info(self, short_name: str) -> Dict[str, Any]:
         """Get information about a NISAR product type."""
