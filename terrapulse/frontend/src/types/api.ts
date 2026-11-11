@@ -1,9 +1,19 @@
-export type HazardId = 'flood' | 'tsunami' | 'hurricane' | 'volcano' | 'earthquake'
+export type HazardId =
+  | 'flood'
+  | 'tsunami'
+  | 'hurricane'
+  | 'volcano'
+  | 'earthquake'
+  | 'forest_disturbance'
+  | 'landslide'
+  | 'agriculture'
+  | 'deformation'
 
 export interface HazardMeta {
   id: HazardId
   label: string
   color: string
+  defaultBand?: string
 }
 
 export interface Region {
@@ -44,6 +54,8 @@ export interface GeoJsonFeature {
     area_km2?: number | null
     mean_difference_db?: number
     min_difference_db?: number
+    confidence_score?: number
+    confidence_level?: string
     flood_indicator?: boolean
   }
   geometry: {
@@ -64,6 +76,7 @@ export interface AnalysisMetrics {
   percentage_decrease?: number | null
   percentage_disturbed?: number | null
   affected_area_km2?: number | null
+  mean_coherence?: number | null
   area_basis?: string
   valid_pixels?: number | null
   total_pixels?: number | null
@@ -81,11 +94,14 @@ export interface WindowsMetadata {
   crs?: string
   epsg?: number | null
   bounds?: [[number, number], [number, number]] | null
+  stride?: number
+  downsampled?: boolean
   note?: string
 }
 
 export interface AnalysisResult {
   success: boolean
+  is_sample?: boolean
   status: string
   method?: string
   hazard?: string
@@ -97,10 +113,15 @@ export interface AnalysisResult {
   actual_granule_dates?: DatePair
   same_orbit_pair?: boolean
   location?: LocationPoint
+  bbox?: number[] | null
   short_name?: string | null
   polarization_band?: string
   threshold_db?: number
+  threshold_mode?: string
+  speckle_filter?: string
   detection_mode?: string
+  severity?: 'High' | 'Medium' | 'Low'
+  severity_rule?: string
   windows?: WindowsMetadata
   before_granule?: Granule
   after_granule?: Granule
@@ -108,11 +129,32 @@ export interface AnalysisResult {
     compatible: boolean
     warnings: string[]
   }
+  images?: {
+    before?: string
+    after?: string
+    difference?: string
+    rgb?: string
+  }
+  raw_stats?: {
+    mean_difference_db: number
+    std_difference_db: number
+    percentage_decrease: number
+  } | null
+  auxiliary_masks?: {
+    water_mask_requested: boolean
+    slope_mask_requested: boolean
+    masks_applied: boolean
+    status: string
+    notes: string[]
+  }
   analysis?: AnalysisMetrics
   results?: Record<string, GeoJsonCollection>
   processing_note?: string
   caveats_and_limitations?: string[]
   confidence?: {
+    score?: number
+    level?: string
+    formula?: string
     based_on: string
     quality: string
     requires_validation: string
@@ -137,6 +179,8 @@ export interface JobSummary {
   percentage_decrease?: number | null
   percentage_disturbed?: number | null
   affected_area_km2?: number | null
+  confidence_score?: number | null
+  severity?: string | null
   outlines: number
   error?: string | null
   created_at: string
@@ -147,7 +191,7 @@ export interface Job {
   status: string
   stage: string
   progress: number
-  params: Record<string, string | number | null | undefined>
+  params: Record<string, unknown>
   created_at: string
   result?: AnalysisResult | null
   error?: string | null
@@ -204,4 +248,90 @@ export interface AuthStatus {
 export interface HealthStatus {
   status: string
   service: string
+}
+
+export interface AoiItem {
+  id: number
+  name: string
+  bbox: number[]
+  area_km2: number
+  created_at: string
+}
+
+export interface LiveEvent {
+  id: string
+  source: string
+  hazard: string
+  title: string
+  lat: number
+  lon: number
+  date: string
+  magnitude?: number | null
+  url?: string | null
+  category?: string | null
+}
+
+export interface LiveEventsResponse {
+  events: LiveEvent[]
+  warnings: string[]
+}
+
+export interface TimeseriesPoint {
+  id?: number
+  granule_id?: string | null
+  acquisition_date: string
+  mean_db: number
+  std_db: number
+  orbit_direction?: string
+  valid_pixels?: number | null
+}
+
+export interface TimeseriesJob {
+  series_id: string
+  lat: number
+  lon: number
+  band: string
+  months: number
+  status: string
+  total_granules?: number | null
+  processed_granules?: number | null
+  error?: string | null
+  created_at: string
+  points: TimeseriesPoint[]
+}
+
+export interface WatchlistItem {
+  id: number
+  name: string
+  lat: number
+  lon: number
+  hazard: string
+  severity_threshold: string
+  email?: string | null
+  last_checked?: string | null
+  last_granule_date?: string | null
+  created_at: string
+}
+
+export interface AlertItem {
+  id: number
+  watchlist_id?: number | null
+  job_id?: string | null
+  hazard: string
+  location_name: string
+  severity: string
+  message: string
+  granule_id?: string | null
+  acknowledged: boolean
+  created_at: string
+}
+
+export interface DiscoveredCollection {
+  short_name: string
+  version: string
+  title: string
+  concept_id?: string | null
+  family: string
+  processing_level?: string | null
+  abstract: string
 }

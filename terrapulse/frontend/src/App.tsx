@@ -10,12 +10,15 @@ import './index.css'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const ExploreMap = lazy(() => import('./pages/ExploreMap'))
 const ChangeAnalysis = lazy(() => import('./pages/ChangeAnalysis'))
+const TimeSeries = lazy(() => import('./pages/TimeSeries'))
+const CompareJobs = lazy(() => import('./pages/CompareJobs'))
 const Events = lazy(() => import('./pages/Events'))
 const Catalog = lazy(() => import('./pages/Catalog'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const Methodology = lazy(() => import('./pages/Methodology'))
 const Settings = lazy(() => import('./pages/Settings'))
+const ResultDetail = lazy(() => import('./pages/ResultDetail'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +51,8 @@ export default function App() {
                 <Route path="/explore" element={<ExploreMap />} />
                 <Route path="/change" element={<ChangeAnalysis />} />
                 <Route path="/change-detection" element={<ChangeAnalysis />} />
+                <Route path="/timeseries" element={<TimeSeries />} />
+                <Route path="/compare" element={<CompareJobs />} />
                 <Route path="/events" element={<Events />} />
                 <Route path="/catalog" element={<Catalog />} />
                 <Route path="/data-explorer" element={<Catalog />} />
@@ -55,6 +60,7 @@ export default function App() {
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/methodology" element={<Methodology />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/results/:jobId" element={<ResultDetail />} />
                 <Route path="/about" element={<Methodology />} />
                 <Route path="/locations" element={<Events />} />
               </Routes>

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Area,
   AreaChart,
@@ -9,14 +10,18 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { jobExportUrl } from '../api/analysis'
 import { Card } from '../components/Card'
 import { useJobs } from '../hooks/useJobs'
-import { downloadFile, fmt } from '../utils/format'
+import { usePrefsStore } from '../store/usePrefsStore'
+import { downloadFile, fmt, formatArea } from '../utils/format'
 import { REGIONS, hazardLabel, regionName } from '../utils/geo'
 import { metricOf } from '../utils/severity'
 
 export default function Reports() {
+  const navigate = useNavigate()
   const { jobs } = useJobs()
+  const areaUnit = usePrefsStore((s) => s.prefs.areaUnit)
   const done = jobs
     .filter((j) => j.status === 'complete' && j.mean_db !== undefined && j.mean_db !== null)
     .slice()
@@ -37,7 +42,7 @@ export default function Reports() {
 
   const insights = filtered.slice(-4).reverse().map((j) => {
     const m = metricOf(j)
-    return `${hazardLabel(j.hazard)} near ${regionName(j.location.lat, j.location.lon)}: mean Δ ${fmt(j.mean_db)} dB, ${fmt(m, 1)}% pixels flagged (${j.actual_granule_dates?.before} → ${j.actual_granule_dates?.after}).`
+    return `${hazardLabel(j.hazard)} near ${regionName(j.location.lat, j.location.lon)}: mean Δ ${fmt(j.mean_db)} dB, ${fmt(m, 1)}% pixels flagged (${formatArea(j.affected_area_km2, areaUnit)}).`
   })
 
   const csv = () => {
@@ -72,7 +77,7 @@ export default function Reports() {
               key={t}
               onClick={() => setTab(t)}
               className={`text-sm rounded-lg px-3 py-1.5 capitalize ${
-                tab === t ? 'bg-blue-600' : 'bg-white/5 text-white/65'
+                tab === t ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/65'
               }`}
             >
               {t === 'regional' ? 'Regional Insights' : t}
@@ -83,10 +88,11 @@ export default function Reports() {
             onClick={() => window.print()}
             className="text-sm border border-white/15 rounded-lg px-3 py-1.5"
           >
-            Download Report
+            Print View
           </button>
         </div>
       </div>
+
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
           <Card title="Surface Change Trend">
@@ -126,6 +132,41 @@ export default function Reports() {
               </div>
             )}
           </Card>
+
+          <Card title="Per-Job Report Exports (PDF, GeoTIFF, CSV)">
+            {filtered.length === 0 ? (
+              <p>Run analyses to export per-job GeoTIFF rasters and multi-page PDF reports.</p>
+            ) : (
+              <div className="space-y-2">
+                {filtered.slice(-6).reverse().map((j) => (
+                  <div
+                    key={j.job_id}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-2 text-xs"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/results/${j.job_id}`)}
+                      className="text-left text-white hover:text-cyan-300"
+                    >
+                      {j.job_id} · {hazardLabel(j.hazard)} · {regionName(j.location.lat, j.location.lon)}
+                    </button>
+                    <div className="flex gap-2">
+                      <a href={jobExportUrl(j.job_id, 'pdf')} className="text-cyan-300 underline">
+                        PDF
+                      </a>
+                      <a href={jobExportUrl(j.job_id, 'tif')} className="text-cyan-300 underline">
+                        GeoTIFF
+                      </a>
+                      <a href={jobExportUrl(j.job_id, 'csv')} className="text-cyan-300 underline">
+                        CSV
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
           <Card title="Key Insights">
             {insights.length === 0 && (
               <p>Insights are generated from completed live analyses — none yet.</p>
@@ -137,7 +178,8 @@ export default function Reports() {
             </ul>
           </Card>
         </div>
-        <Card title="Generate Report">
+
+        <Card title="Generate Batch Export">
           <label className="text-xs">
             Region{' '}
             <select
@@ -157,16 +199,16 @@ export default function Reports() {
           <button
             type="button"
             onClick={() => window.print()}
-            className="w-full bg-blue-600 hover:bg-blue-500 rounded-lg px-4 py-2 text-sm font-semibold"
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-4 py-2 text-sm font-semibold"
           >
-            Generate PDF Report
+            Print Summary
           </button>
           <button
             type="button"
             onClick={csv}
             className="w-full border border-white/15 rounded-lg px-4 py-2 text-sm"
           >
-            Download CSV Data
+            Download All CSV
           </button>
           <button
             type="button"
@@ -179,7 +221,7 @@ export default function Reports() {
             }
             className="w-full border border-white/15 rounded-lg px-4 py-2 text-sm"
           >
-            Download JSON
+            Download All JSON
           </button>
         </Card>
       </div>

@@ -1,23 +1,32 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type L from 'leaflet'
-import { Layers, LocateFixed } from 'lucide-react'
-import { CircleMarker, Marker, Popup, useMapEvents } from 'react-leaflet'
+import { Layers, LineChart, LocateFixed, Square, Trash2 } from 'lucide-react'
+import { CircleMarker, Marker, Popup, Rectangle, useMapEvents } from 'react-leaflet'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { toast } from 'sonner'
+import { createAoi, deleteAoi, fetchAois } from '../api/aois'
 import { fetchPointInsights } from '../api/analysis'
 import { geocodePlace } from '../api/geocode'
+import { AoiDrawControl } from '../components/AoiDrawControl'
 import { Card } from '../components/Card'
 import { GradientLegend } from '../components/Legend'
 import { MapBase } from '../components/MapBase'
 import { useJobs } from '../hooks/useJobs'
 import { usePrefsStore } from '../store/usePrefsStore'
-import { fmt } from '../utils/format'
-import { HAZARDS, REGIONS, hazardColor, hazardLabel } from '../utils/geo'
+import { fmt, formatArea } from '../utils/format'
+import { approxBboxAreaKm2, HAZARDS, REGIONS, hazardColor, hazardLabel } from '../utils/geo'
 
-function ClickCatcher({ onPick }: { onPick: (lat: number, lon: number) => void }) {
+function ClickCatcher({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean
+  onPick: (lat: number, lon: number) => void
+}) {
   useMapEvents({
     click(e) {
-      onPick(e.latlng.lat, e.latlng.lng)
+      if (!disabled) onPick(e.latlng.lat, e.latlng.lng)
     },
   })
   return null
@@ -31,11 +40,15 @@ function parseCoord(val: string | null): number | null {
 
 export default function ExploreMap() {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const [params, setSearchParams] = useSearchParams()
   const prefs = usePrefsStore((s) => s.prefs)
   const [base, setBase] = useState<'esri' | 'osm'>(prefs.baseLayer === 'osm' ? 'osm' : 'esri')
   const [showRegions, setShowRegions] = useState(true)
   const [showOutlines, setShowOutlines] = useState(true)
+  const [drawingAoi, setDrawingAoi] = useState(false)
+  const [drawnBbox, setDrawnBbox] = useState<[number, number, number, number] | null>(null)
+  const [aoiName, setAoiName] = useState('')
   const [layerHz, setLayerHz] = useState('flood')
   const [rangeDays, setRangeDays] = useState(90)
   const [nowMs] = useState(() => Date.now())
@@ -49,7 +62,10 @@ export default function ExploreMap() {
 
   const [clickedPt, setClickedPt] = useState<{ lat: number; lon: number; label?: string } | null>(null)
   const activePt =
-    clickedPt ?? (paramLat !== null && paramLon !== null ? { lat: paramLat, lon: paramLon, label: paramLabel ?? undefined } : null)
+    clickedPt ??
+    (paramLat !== null && paramLon !== null
+      ? { lat: paramLat, lon: paramLon, label: paramLabel ?? undefined }
+      : null)
 
   useEffect(() => {
     if (paramLat !== null && paramLon !== null && mapRef.current) {
@@ -62,6 +78,27 @@ export default function ExploreMap() {
     queryFn: () => fetchPointInsights(activePt!.lat, activePt!.lon),
     enabled: Boolean(activePt),
     retry: 1,
+  })
+
+  const aoisQuery = useQuery({
+    queryKey: ['aois'],
+    queryFn: fetchAois,
+    retry: 1,
+  })
+
+  const saveAoiMut = useMutation({
+    mutationFn: ({ name, bbox }: { name: string; bbox: number[] }) => createAoi(name, bbox),
+    onSuccess: () => {
+      setAoiName('')
+      toast.success('Saved Area of Interest')
+      void qc.invalidateQueries({ queryKey: ['aois'] })
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const delAoiMut = useMutation({
+    mutationFn: deleteAoi,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['aois'] }),
   })
 
   const pick = (lat: number, lon: number, label?: string) => {
@@ -98,10 +135,25 @@ export default function ExploreMap() {
       })
     : []
 
+  const launchAoiAnalysis = (box: number[]) => {
+    const cLat = ((box[1] + box[3]) / 2).toFixed(4)
+    const cLon = ((box[0] + box[2]) / 2).toFixed(4)
+    navigate(`/change?lat=${cLat}&lon=${cLon}&hazard=${layerHz}&bbox=${box.join(',')}&auto=1`)
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold">Explore Map</h1>
+        <button
+          type="button"
+          onClick={() => setDrawingAoi((d) => !d)}
+          className={`inline-flex items-center gap-1.5 text-sm rounded-lg px-3 py-1.5 font-medium ${
+            drawingAoi ? 'bg-cyan-500 text-black' : 'bg-white/10 hover:bg-white/20 text-white'
+          }`}
+        >
+          <Square size={14} /> {drawingAoi ? 'Drag rectangle on map…' : 'Draw AOI Box'}
+        </button>
         <form onSubmit={geocode} className="flex gap-2 ml-auto">
           <input
             value={q}
@@ -118,9 +170,31 @@ export default function ExploreMap() {
         </form>
       </div>
       <div className="grid lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 relative h-[520px] rounded-xl overflow-hidden border border-white/10">
+        <div className="lg:col-span-2 relative h-[540px] rounded-xl overflow-hidden border border-white/10">
           <MapBase center={[-1.5, -52.0]} zoom={3} baseLayer={base} mapRef={mapRef}>
-            <ClickCatcher onPick={(la, lo) => pick(la, lo)} />
+            <ClickCatcher disabled={drawingAoi} onPick={(la, lo) => pick(la, lo)} />
+            <AoiDrawControl
+              drawing={drawingAoi}
+              drawnBbox={drawnBbox}
+              onDrawn={(box) => {
+                setDrawnBbox(box)
+                setDrawingAoi(false)
+              }}
+            />
+            {(aoisQuery.data ?? []).map((aoi) => (
+              <Rectangle
+                key={aoi.id}
+                bounds={[
+                  [aoi.bbox[1], aoi.bbox[0]],
+                  [aoi.bbox[3], aoi.bbox[2]],
+                ]}
+                pathOptions={{ color: '#a78bfa', weight: 1.5, fillOpacity: 0.08 }}
+              >
+                <Popup>
+                  {aoi.name} · {formatArea(aoi.area_km2, prefs.areaUnit)}
+                </Popup>
+              </Rectangle>
+            ))}
             {showRegions &&
               REGIONS.map((r) => (
                 <Marker key={r.id} position={[r.lat, r.lon]}>
@@ -149,12 +223,12 @@ export default function ExploreMap() {
                 }}
               >
                 <Popup>
-                  {hazardLabel(job.hazard)} · {fmt(job.mean_db)} dB · click View in Events
+                  {hazardLabel(job.hazard)} · {fmt(job.mean_db)} dB · View in Events
                 </Popup>
               </CircleMarker>
             ))}
           </MapBase>
-          <div className="absolute top-3 right-3 z-[500] bg-[#0c1424]/95 border border-white/10 rounded-xl p-3 w-52">
+          <div className="absolute top-3 right-3 z-[500] bg-[#0c1424]/95 border border-white/10 rounded-xl p-3 w-52 max-h-[480px] overflow-y-auto">
             <p className="text-xs font-semibold flex items-center gap-1.5 mb-2">
               <Layers size={13} /> Layers
             </p>
@@ -218,14 +292,53 @@ export default function ExploreMap() {
             }
             className="absolute bottom-3 right-3 z-[500] bg-[#0c1424]/95 border border-white/10 rounded-lg p-2"
             title="Locate me"
+            aria-label="Center map on my location"
           >
             <LocateFixed size={16} />
           </button>
         </div>
         <div className="space-y-3">
+          {drawnBbox && (
+            <Card title={`Drawn AOI (${formatArea(approxBboxAreaKm2(drawnBbox), prefs.areaUnit)})`}>
+              <p className="text-xs font-mono">[{drawnBbox.map((v) => v.toFixed(3)).join(', ')}]</p>
+              <div className="flex gap-2">
+                <input
+                  value={aoiName}
+                  onChange={(e) => setAoiName(e.target.value)}
+                  placeholder="Name this AOI…"
+                  className="flex-1 bg-white/10 rounded px-2 py-1 text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={!aoiName.trim() || saveAoiMut.isPending}
+                  onClick={() => saveAoiMut.mutate({ name: aoiName.trim(), bbox: drawnBbox })}
+                  className="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => launchAoiAnalysis(drawnBbox)}
+                  className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg py-1.5 text-xs font-semibold"
+                >
+                  Analyse AOI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDrawnBbox(null)}
+                  className="bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 text-xs"
+                >
+                  Clear
+                </button>
+              </div>
+            </Card>
+          )}
+
           {!activePt && (
             <Card title="No point selected">
-              <p>Click anywhere on the map for live NISAR coverage there.</p>
+              <p>Click anywhere on the map for live NISAR coverage, or draw an AOI box above.</p>
             </Card>
           )}
           {activePt && (
@@ -249,6 +362,13 @@ export default function ExploreMap() {
                     <span className="text-white/50">Latest pass:</span>{' '}
                     {insightsQuery.data.latest_acquisition}
                   </p>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/timeseries?lat=${activePt.lat}&lon=${activePt.lon}`)}
+                    className="inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 text-cyan-200"
+                  >
+                    <LineChart size={13} /> Open Backscatter Time Series
+                  </button>
                   <p className="font-semibold text-white pt-1">Detect hazard here:</p>
                   <div className="flex flex-wrap gap-1.5">
                     {HAZARDS.map((h) => (
@@ -268,6 +388,48 @@ export default function ExploreMap() {
                   </div>
                 </>
               )}
+            </Card>
+          )}
+
+          {(aoisQuery.data?.length ?? 0) > 0 && (
+            <Card title="Saved AOIs">
+              <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                {aoisQuery.data!.map((aoi) => (
+                  <div
+                    key={aoi.id}
+                    className="flex items-center justify-between gap-2 text-xs bg-white/5 rounded px-2.5 py-1.5"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDrawnBbox(aoi.bbox as [number, number, number, number])
+                        mapRef.current?.fitBounds([
+                          [aoi.bbox[1], aoi.bbox[0]],
+                          [aoi.bbox[3], aoi.bbox[2]],
+                        ])
+                      }}
+                      className="text-left truncate flex-1 hover:text-cyan-300"
+                    >
+                      {aoi.name} · {formatArea(aoi.area_km2, prefs.areaUnit)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => launchAoiAnalysis(aoi.bbox)}
+                      className="text-cyan-300 hover:underline"
+                    >
+                      Run
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => delAoiMut.mutate(aoi.id)}
+                      className="text-red-400 hover:text-red-300"
+                      aria-label={`Delete AOI ${aoi.name}`}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </Card>
           )}
         </div>

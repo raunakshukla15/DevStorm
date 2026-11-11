@@ -6,14 +6,63 @@
 }
 
 body {
-  background-color: #0a0e20;
+  background-color: #060b16;
   color: #fff;
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+html.tp-light body {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+html.tp-light .tp-shell {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+html.tp-light .tp-sidebar {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+}
+
+html.tp-light .tp-card,
+html.tp-light .bg-\[\#0c1424\],
+html.tp-light .bg-\[\#0a1120\] {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.tp-light .text-white {
+  color: #0f172a !important;
+}
+
+html.tp-light .text-white\/70,
+html.tp-light .text-white\/65,
+html.tp-light .text-white\/60 {
+  color: #334155 !important;
+}
+
+html.tp-light .text-white\/50,
+html.tp-light .text-white\/45,
+html.tp-light .text-white\/40 {
+  color: #64748b !important;
+}
+
+html.tp-light .border-white\/10,
+html.tp-light .border-white\/15 {
+  border-color: #cbd5e1 !important;
+}
+
+html.tp-light .bg-white\/5,
+html.tp-light .bg-white\/10 {
+  background-color: #f8fafc !important;
+}
+
 @media print {
-  aside, header { display: none !important; }
+  aside, header, .no-print { display: none !important; }
   main { overflow: visible !important; }
   body { background: #fff; color: #000; }
 }

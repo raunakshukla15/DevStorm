@@ -1,16 +1,25 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Search } from 'lucide-react'
+import { Search, Sparkles } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { startHazardJob } from '../api/analysis'
+import { toast } from 'sonner'
+import { fetchSampleResult, startHazardJob } from '../api/analysis'
 import { geocodePlace } from '../api/geocode'
 import { AnalysisResult } from '../components/AnalysisResult'
 import { Card } from '../components/Card'
 import { HazardPicker } from '../components/HazardPicker'
+import { SevBadge } from '../components/SevBadge'
 import { useJobPolling } from '../hooks/useJobPolling'
 import { usePrefsStore } from '../store/usePrefsStore'
-import { fmt } from '../utils/format'
+import { formatArea, formatPower } from '../utils/format'
 import { HAZARDS } from '../utils/geo'
+
+function parseBboxParam(raw: string | null): number[] | null {
+  if (!raw) return null
+  const nums = raw.split(',').map((s) => Number.parseFloat(s.trim()))
+  if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) return null
+  return nums
+}
 
 export default function ChangeAnalysis() {
   const [params] = useSearchParams()
@@ -20,8 +29,8 @@ export default function ChangeAnalysis() {
 
   const [form, setForm] = useState(() => ({
     place: '',
-    before: '2026-09-01',
-    after: '2026-09-13',
+    before: params.get('before') ?? '2026-09-01',
+    after: params.get('after') ?? '2026-09-13',
     lat: params.get('lat') ?? '-1.5',
     lon: params.get('lon') ?? '-52.0',
   }))
@@ -29,17 +38,29 @@ export default function ChangeAnalysis() {
     const hz = params.get('hazard')
     return hz && HAZARDS.some((h) => h.id === hz) ? hz : (prefs.defaultHazard ?? 'flood')
   })
-  const [auto, setAuto] = useState(() => (params.get('auto') === '1' ? true : prefs.autoDates !== false))
+  const [auto, setAuto] = useState(() => {
+    if (params.get('before') && params.get('after')) return false
+    return params.get('auto') === '1' ? true : prefs.autoDates !== false
+  })
+  const [band, setBand] = useState(() => HAZARDS.find((h) => h.id === hazard)?.defaultBand ?? 'HH')
+  const [speckleFilter, setSpeckleFilter] = useState('lee')
+  const [thresholdMode, setThresholdMode] = useState('fixed')
+  const [windowSize, setWindowSize] = useState(256)
+  const [waterMask, setWaterMask] = useState(false)
+  const [slopeMask, setSlopeMask] = useState(false)
+  const [bbox, setBbox] = useState<number[] | null>(() => parseBboxParam(params.get('bbox')))
+
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [validationError, setValidationError] = useState<string | null>(null)
-  const [detail, setDetail] = useState(false)
+  const [detail, setDetail] = useState(true)
 
   const jobQuery = useJobPolling(activeJobId)
   const running =
     Boolean(activeJobId) &&
     jobQuery.data?.status !== 'complete' &&
+    jobQuery.data?.status !== 'completed' &&
     jobQuery.data?.status !== 'failed' &&
     !jobQuery.isError
 
@@ -52,7 +73,7 @@ export default function ChangeAnalysis() {
   }, [running, startedAt])
 
   useEffect(() => {
-    if (jobQuery.data?.status === 'complete' && jobQuery.data.result) {
+    if ((jobQuery.data?.status === 'complete' || jobQuery.data?.status === 'completed') && jobQuery.data.result) {
       setLastResult(jobQuery.data.result)
     }
   }, [jobQuery.data, setLastResult])
@@ -63,8 +84,28 @@ export default function ChangeAnalysis() {
       setActiveJobId(res.job_id)
       setStartedAt(Date.now())
       setElapsed(0)
+      toast.info(`Started ${res.hazard ?? hazard} job ${res.job_id}`)
     },
+    onError: (err: Error) => toast.error(err.message),
   })
+
+  const loadSample = async () => {
+    try {
+      const sample = await fetchSampleResult()
+      setActiveJobId(null)
+      setLastResult(sample)
+      setDetail(true)
+      toast.success('Loaded guided NISAR sample demonstration')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not load sample')
+    }
+  }
+
+  const onSelectHazard = (nextHz: string) => {
+    setHazard(nextHz)
+    const meta = HAZARDS.find((h) => h.id === nextHz)
+    if (meta?.defaultBand) setBand(meta.defaultBand)
+  }
 
   const lookupPlace = async () => {
     if (!form.place.trim()) return
@@ -108,7 +149,6 @@ export default function ChangeAnalysis() {
       }
     }
     setValidationError(null)
-    setDetail(false)
     setActiveJobId(null)
     startMutation.mutate({
       hazard,
@@ -116,8 +156,14 @@ export default function ChangeAnalysis() {
       lon,
       beforeDate: auto ? undefined : form.before,
       afterDate: auto ? undefined : form.after,
-      datasetId: 'nisar_l2_gcov',
-      band: 'HH',
+      datasetId: hazard === 'deformation' ? 'nisar_l2_gunw' : 'nisar_l2_gcov',
+      band,
+      window: windowSize,
+      bbox,
+      speckleFilter,
+      thresholdMode,
+      waterMask,
+      slopeMask,
     })
   }
 
@@ -134,14 +180,33 @@ export default function ChangeAnalysis() {
 
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
   const a = result?.analysis
+  const shownJobId = activeJobId ?? jobQuery.data?.job_id ?? null
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Change Analysis</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-bold">Change Analysis</h1>
+        <button
+          type="button"
+          onClick={loadSample}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200"
+        >
+          <Sparkles size={14} /> Try a sample
+        </button>
+      </div>
+
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
           <form onSubmit={run} className="bg-[#0c1424] p-5 rounded-xl border border-white/10 space-y-3">
-            <HazardPicker value={hazard} onChange={setHazard} />
+            <HazardPicker value={hazard} onChange={onSelectHazard} />
+            {bbox && (
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 px-3 py-1.5 text-xs text-cyan-200">
+                <span>AOI crop active: [{bbox.map((v) => v.toFixed(3)).join(', ')}]</span>
+                <button type="button" onClick={() => setBbox(null)} className="underline">
+                  Clear AOI
+                </button>
+              </div>
+            )}
             <div className="grid md:grid-cols-3 gap-3">
               <label className="text-sm md:col-span-1">
                 Location
@@ -157,6 +222,7 @@ export default function ChangeAnalysis() {
                     onClick={lookupPlace}
                     className="bg-white/10 rounded px-2"
                     title="Find coordinates"
+                    aria-label="Find place coordinates"
                   >
                     <Search size={14} />
                   </button>
@@ -186,25 +252,92 @@ export default function ChangeAnalysis() {
                 </label>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label className="text-xs text-white/70">
                 Latitude
                 <input
                   value={form.lat}
                   onChange={(e) => setForm({ ...form, lat: e.target.value })}
-                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5"
+                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-sm text-white"
                 />
               </label>
-              <label className="text-sm">
+              <label className="text-xs text-white/70">
                 Longitude
                 <input
                   value={form.lon}
                   onChange={(e) => setForm({ ...form, lon: e.target.value })}
-                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5"
+                  className="mt-1 w-full bg-white/10 rounded px-2 py-1.5 text-sm text-white"
                 />
               </label>
+              <label className="text-xs text-white/70">
+                Band
+                <select
+                  value={band}
+                  onChange={(e) => setBand(e.target.value)}
+                  className="mt-1 w-full bg-[#060b16] border border-white/15 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value="HH">HH</option>
+                  <option value="HV">HV</option>
+                  <option value="VV">VV</option>
+                  <option value="HH/HV">HH/HV ratio</option>
+                </select>
+              </label>
+              <label className="text-xs text-white/70">
+                Window (px)
+                <select
+                  value={windowSize}
+                  onChange={(e) => setWindowSize(Number(e.target.value))}
+                  className="mt-1 w-full bg-[#060b16] border border-white/15 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value={128}>128 × 128</option>
+                  <option value={256}>256 × 256</option>
+                  <option value={512}>512 × 512</option>
+                </select>
+              </label>
             </div>
-            <label className="text-sm flex items-center gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1">
+              <label className="text-xs text-white/70">
+                Speckle filter
+                <select
+                  value={speckleFilter}
+                  onChange={(e) => setSpeckleFilter(e.target.value)}
+                  className="mt-1 w-full bg-[#060b16] border border-white/15 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value="none">None (raw)</option>
+                  <option value="boxcar">Boxcar (5×5)</option>
+                  <option value="lee">Lee Adaptive (5×5)</option>
+                </select>
+              </label>
+              <label className="text-xs text-white/70">
+                Threshold
+                <select
+                  value={thresholdMode}
+                  onChange={(e) => setThresholdMode(e.target.value)}
+                  className="mt-1 w-full bg-[#060b16] border border-white/15 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value="fixed">Fixed (−2.0 dB / ±2 dB)</option>
+                  <option value="otsu">Adaptive Otsu</option>
+                  <option value="mean_std">Mean ± 1.5·Std</option>
+                </select>
+              </label>
+              <label className="text-xs flex items-center gap-2 pt-4 text-white/80">
+                <input
+                  type="checkbox"
+                  checked={waterMask}
+                  onChange={(e) => setWaterMask(e.target.checked)}
+                />
+                Water mask check
+              </label>
+              <label className="text-xs flex items-center gap-2 pt-4 text-white/80">
+                <input
+                  type="checkbox"
+                  checked={slopeMask}
+                  onChange={(e) => setSlopeMask(e.target.checked)}
+                />
+                Terrain slope check
+              </label>
+            </div>
+            <label className="text-sm flex items-center gap-2 pt-1">
               <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
               Auto dates — newest suitable granule pair (recommended)
             </label>
@@ -217,7 +350,7 @@ export default function ChangeAnalysis() {
             </button>
           </form>
 
-          {(running || result) && (
+          {(running || result) && !result?.images?.before && (
             <div className="grid md:grid-cols-2 gap-4">
               {(['before', 'after'] as const).map((k) => (
                 <div key={k} className="bg-[#0c1424] rounded-xl border border-white/10 overflow-hidden">
@@ -227,16 +360,14 @@ export default function ChangeAnalysis() {
                       {result?.actual_granule_dates?.[k] ?? ''}
                     </span>
                   </p>
-                  <div className="m-3 h-56 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center overflow-hidden">
+                  <div className="m-3 h-48 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center overflow-hidden">
                     {previews[k] ? (
                       <img src={previews[k]} alt={`${k} preview`} className="w-full h-full object-cover" />
                     ) : running ? (
-                      <p className="text-white/40 text-sm">Preview arrives with the result…</p>
+                      <p className="text-white/40 text-sm">Streaming window via SSE…</p>
                     ) : (
                       <p className="text-white/40 text-sm text-center px-4">
-                        No browse preview published
-                        <br />
-                        for this granule
+                        No browse preview published for this granule
                       </p>
                     )}
                   </div>
@@ -244,6 +375,7 @@ export default function ChangeAnalysis() {
               ))}
             </div>
           )}
+
           {running && (
             <Card title="Analysis in progress">
               <p className="capitalize">
@@ -263,34 +395,42 @@ export default function ChangeAnalysis() {
               <p className="text-red-300">{errorMessage}</p>
             </Card>
           )}
-          {detail && result && <AnalysisResult result={result} />}
+          {detail && result && <AnalysisResult result={result} jobId={shownJobId} />}
         </div>
 
         <div className="space-y-4">
           <section className="bg-[#0c1424] rounded-xl border border-white/10 p-5">
             <h2 className="font-semibold mb-3">Analysis Results</h2>
-            {!result && <p className="text-sm text-white/50">Run a comparison — live values will appear here.</p>}
+            {!result && <p className="text-sm text-white/50">Run a comparison or click “Try a sample”.</p>}
             {result && a && (
               <div className="space-y-3 text-sm">
                 <div>
                   <p className="text-white/50 text-xs">Affected Area</p>
-                  <p className="text-xl font-bold">
-                    {a.affected_area_km2 != null ? `${a.affected_area_km2.toFixed(2)} km²` : 'n/a'}
-                  </p>
+                  <p className="text-xl font-bold">{formatArea(a.affected_area_km2, prefs.areaUnit)}</p>
                   <p className="text-[11px] text-white/40">{a.area_basis}</p>
                 </div>
-                <div>
-                  <p className="text-white/50 text-xs">Change Type</p>
-                  <p className="font-semibold">{result.hazard_label}</p>
-                </div>
-                <div>
-                  <p className="text-white/50 text-xs">Quality</p>
-                  <p className="font-semibold text-amber-200">Indicator — field validation needed</p>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-white/50 text-xs">Change Type</p>
+                    <p className="font-semibold">{result.hazard_label}</p>
+                  </div>
+                  {result.severity && <SevBadge level={result.severity} />}
                 </div>
                 <div>
                   <p className="text-white/50 text-xs">Mean Backscatter Change</p>
-                  <p className="font-semibold">{fmt(a.mean_backscatter_difference_db)} dB</p>
+                  <p className="font-semibold">{formatPower(a.mean_backscatter_difference_db, prefs.powerUnit)}</p>
                 </div>
+                {result.confidence?.level && (
+                  <div>
+                    <p className="text-white/50 text-xs">Confidence</p>
+                    <p className="font-semibold text-cyan-200">
+                      {result.confidence.level}
+                      {typeof result.confidence.score === 'number'
+                        ? ` (${Math.round(result.confidence.score * 100)}%)`
+                        : ''}
+                    </p>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setDetail((d) => !d)}
@@ -303,8 +443,8 @@ export default function ChangeAnalysis() {
           </section>
           <Card title="How to read this">
             <p>
-              dB drop beyond −2 dB → possible standing water. Strong change either way → fresh deposits,
-              debris or canopy damage. Always check granule dates vs the event date.
+              dB drop beyond −2 dB → possible standing water or canopy loss. Strong magnitude change → fresh
+              lava, landslides or crop change. Use Lee filter to suppress speckle noise before thresholding.
             </p>
           </Card>
         </div>

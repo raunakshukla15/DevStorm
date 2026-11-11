@@ -7,6 +7,9 @@ export interface UserPrefs {
   autoDates: boolean
   defaultRegion: string
   baseLayer: 'esri' | 'osm'
+  theme: 'dark' | 'light'
+  areaUnit: 'km2' | 'ha'
+  powerUnit: 'db' | 'linear'
 }
 
 interface PrefsState {
@@ -23,6 +26,9 @@ const DEFAULT_PREFS: UserPrefs = {
   autoDates: true,
   defaultRegion: 'amazon',
   baseLayer: 'esri',
+  theme: 'dark',
+  areaUnit: 'km2',
+  powerUnit: 'db',
 }
 
 export const usePrefsStore = create<PrefsState>()(

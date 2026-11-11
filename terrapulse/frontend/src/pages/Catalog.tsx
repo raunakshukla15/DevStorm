@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { discoverNisarCollections } from '../api/datasets'
 import { searchObservations } from '../api/observations'
 import { Card } from '../components/Card'
 import { Skeleton } from '../components/Skeleton'
@@ -9,26 +10,35 @@ export default function Catalog() {
   const [tab, setTab] = useState('all')
   const [region, setRegion] = useState('amazon')
   const [start, setStart] = useState('2026-08-01')
-  const [end, setEnd] = useState('2026-10-14')
-  const [submitted, setSubmitted] = useState({ region: 'amazon', start: '2026-08-01', end: '2026-10-14' })
+  const [end, setEnd] = useState('2026-11-15')
+  const [submitted, setSubmitted] = useState({ region: 'amazon', start: '2026-08-01', end: '2026-11-15' })
 
   const activeRegion = REGIONS.find((x) => x.id === submitted.region) ?? REGIONS[0]
+  const datasetForTab = tab === 'insar' ? 'nisar_l2_gunw' : 'nisar_l2_gcov'
 
   const query = useQuery({
-    queryKey: ['catalog', submitted.region, submitted.start, submitted.end],
+    queryKey: ['catalog', datasetForTab, submitted.region, submitted.start, submitted.end],
     queryFn: () =>
       searchObservations({
-        datasetId: 'nisar_l2_gcov',
+        datasetId: datasetForTab,
         lat: activeRegion.lat,
         lon: activeRegion.lon,
         startDate: submitted.start,
         endDate: submitted.end,
       }),
-    enabled: tab !== 'sband' && tab !== 'insar',
+    enabled: tab !== 'sband' && tab !== 'collections',
     retry: 1,
   })
 
-  const levelOf = (sn: string) => (sn.includes('GCOV') ? 'L2' : sn.includes('RSLC') ? 'L1' : '—')
+  const collectionsQuery = useQuery({
+    queryKey: ['discover-nisar-collections'],
+    queryFn: discoverNisarCollections,
+    enabled: tab === 'collections',
+    staleTime: 300000,
+  })
+
+  const levelOf = (sn: string) =>
+    sn.includes('SME2') ? 'L3' : sn.includes('GCOV') || sn.includes('GUNW') || sn.includes('GSLC') ? 'L2' : sn.includes('R') ? 'L1' : '—'
   const rows = query.data ?? []
 
   return (
@@ -36,11 +46,10 @@ export default function Catalog() {
       <h1 className="text-2xl font-bold">Data Catalog</h1>
       <div className="flex flex-wrap gap-2">
         {[
-          { id: 'all', label: 'All Products' },
-          { id: 'lband', label: 'L-band (NASA)' },
+          { id: 'all', label: 'All L2 GCOV Granules' },
+          { id: 'insar', label: 'InSAR (L2 GUNW)' },
+          { id: 'collections', label: 'All NASA CMR Collections' },
           { id: 'sband', label: 'S-band (ISRO)' },
-          { id: 'insar', label: 'InSAR' },
-          { id: 'surface', label: 'Surface Change' },
         ].map((t) => (
           <button
             type="button"
@@ -54,14 +63,32 @@ export default function Catalog() {
           </button>
         ))}
       </div>
-      {tab === 'sband' || tab === 'insar' ? (
-        <Card title={tab === 'sband' ? 'S-band (ISRO Bhoonidhi)' : 'InSAR products'}>
+
+      {tab === 'sband' ? (
+        <Card title="S-band (ISRO Bhoonidhi)">
           <p>
-            {tab === 'sband'
-              ? 'NISAR S-band data is served by ISRO through the Bhoonidhi portal — this catalog only queries the NASA L-band archive, so no rows are shown rather than invented ones.'
-              : 'Interferometric deformation products need RSLC / InSAR processing, which TerraPulse does not stream yet. The catalog lists the GCOV backscatter products actually used.'}
+            NISAR S-band data is served by ISRO through the Bhoonidhi portal — this catalog queries NASA
+            Earthdata CMR L-band archives, so no S-band placeholder rows are fabricated.
           </p>
         </Card>
+      ) : tab === 'collections' ? (
+        <div className="space-y-3">
+          {collectionsQuery.isLoading && <Skeleton className="h-40" />}
+          {(collectionsQuery.data?.length ?? 0) === 0 && !collectionsQuery.isLoading && (
+            <Card title="No collections loaded">
+              <p>Verify Earthdata authentication in Settings to discover live CMR collections.</p>
+            </Card>
+          )}
+          <div className="grid md:grid-cols-2 gap-3">
+            {(collectionsQuery.data ?? []).map((c) => (
+              <Card key={c.short_name} title={`${c.short_name} (v${c.version || '?'})`}>
+                <p className="text-xs text-cyan-300">{c.family}</p>
+                <p className="text-xs text-white/75">{c.title}</p>
+                {c.abstract && <p className="text-xs text-white/45">{c.abstract}</p>}
+              </Card>
+            ))}
+          </div>
+        </div>
       ) : (
         <>
           <div className="flex flex-wrap gap-2 items-end bg-[#0c1424] border border-white/10 rounded-xl p-4">
@@ -99,7 +126,7 @@ export default function Catalog() {
               type="button"
               onClick={() => setSubmitted({ region, start, end })}
               disabled={query.isFetching}
-              className="text-sm bg-blue-600 hover:bg-blue-500 rounded-lg px-4 py-1.5 font-medium disabled:opacity-50"
+              className="text-sm bg-blue-600 hover:bg-blue-500 rounded-lg px-4 py-1.5 font-medium text-white disabled:opacity-50"
             >
               {query.isFetching ? 'Searching live catalog…' : 'Search'}
             </button>
@@ -108,7 +135,10 @@ export default function Catalog() {
           {query.isLoading && <Skeleton className="h-32" />}
           {!query.isError && !query.isLoading && rows.length === 0 && (
             <Card title="No products">
-              <p>No live granules match — widen the dates or pick another region.</p>
+              <p>
+                No live {tab === 'insar' ? 'GUNW InSAR' : 'GCOV'} granules match — widen dates or pick another
+                region.
+              </p>
             </Card>
           )}
           {rows.length > 0 && (

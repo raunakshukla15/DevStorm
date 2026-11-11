@@ -16,17 +16,19 @@ export default function Settings() {
     retry: 1,
   })
 
-  const auth = authQuery.data ?? (authQuery.isError ? { connected: false, timestamp: '', note: 'Backend unreachable.' } : null)
+  const auth =
+    authQuery.data ??
+    (authQuery.isError ? { connected: false, timestamp: '', note: 'Backend unreachable.' } : null)
 
   return (
     <div className="space-y-4 max-w-5xl">
       <h1 className="text-2xl font-bold">Settings &amp; Data Sources</h1>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {[
           ['sources', 'Data Sources'],
           ['processing', 'Processing'],
           ['account', 'Account'],
-          ['preferences', 'Preferences'],
+          ['preferences', 'Theme & Units'],
         ].map(([id, label]) => (
           <button
             type="button"
@@ -43,7 +45,7 @@ export default function Settings() {
       {tab === 'sources' && (
         <div className="grid md:grid-cols-2 gap-4">
           <Card title="NASA Earthdata (ASF DAAC)">
-            <p>L-band NISAR data through NASA Earthdata.</p>
+            <p>L-band NISAR GCOV, GUNW InSAR, GSLC, and SME2 collections via NASA Earthdata.</p>
             <p className="text-xs">
               Status check: {auth ? (auth.connected ? 'Connected' : 'Failed') : '…'}
               {auth?.timestamp ? ` · ${auth.timestamp.slice(0, 19).replace('T', ' ')} UTC` : ''}
@@ -108,7 +110,40 @@ export default function Settings() {
         </Card>
       )}
       {tab === 'preferences' && (
-        <Card title="Map Preferences">
+        <Card title="Appearance & Scientific Units">
+          <label className="flex items-center justify-between gap-4">
+            Theme
+            <select
+              value={prefs.theme}
+              onChange={(e) => setPrefs({ theme: e.target.value === 'light' ? 'light' : 'dark' })}
+              className="bg-white/10 rounded px-2 py-1"
+            >
+              <option value="dark">Dark Slate (Default)</option>
+              <option value="light">Light High-Contrast</option>
+            </select>
+          </label>
+          <label className="flex items-center justify-between gap-4">
+            Area unit
+            <select
+              value={prefs.areaUnit}
+              onChange={(e) => setPrefs({ areaUnit: e.target.value === 'ha' ? 'ha' : 'km2' })}
+              className="bg-white/10 rounded px-2 py-1"
+            >
+              <option value="km2">Square kilometres (km²)</option>
+              <option value="ha">Hectares (ha)</option>
+            </select>
+          </label>
+          <label className="flex items-center justify-between gap-4">
+            Backscatter unit
+            <select
+              value={prefs.powerUnit}
+              onChange={(e) => setPrefs({ powerUnit: e.target.value === 'linear' ? 'linear' : 'db' })}
+              className="bg-white/10 rounded px-2 py-1"
+            >
+              <option value="db">Decibels (dB)</option>
+              <option value="linear">Linear ratio (10^(Δ/10))</option>
+            </select>
+          </label>
           <label className="flex items-center justify-between gap-4">
             Default region
             <select
