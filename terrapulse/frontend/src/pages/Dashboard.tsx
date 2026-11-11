@@ -76,10 +76,13 @@ export default function Dashboard() {
   return (
     <div className="space-y-5">
       <div
-        style={{ backgroundImage: 'linear-gradient(135deg, #0b1b33 0%, #0a1226 55%, #060b16 100%)' }}
-        className="tp-card relative overflow-hidden rounded-2xl border border-white/10 bg-[#0b172c] p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6"
+        style={{ backgroundImage: 'linear-gradient(135deg, #0f1d38 0%, #0c1528 55%, #080d1a 100%)' }}
+        className="tp-card relative overflow-hidden rounded-2xl border border-white/15 bg-[#0c1424] p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6"
       >
         <div className="space-y-3 max-w-xl">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 px-2.5 py-0.5 text-[11px] font-medium text-cyan-300">
+            NASA-ISRO L-Band SAR
+          </span>
           <h1 className="text-3xl font-bold">Earth Surface Change Monitoring</h1>
           <p className="text-white/65">
             Track real Earth-surface backscatter and interferometric change using NASA-ISRO NISAR radar data.
@@ -88,14 +91,14 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => navigate('/change')}
-              className="rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2"
+              className="rounded-lg bg-blue-600 hover:bg-blue-500 text-white tp-keep-white text-sm font-semibold px-4 py-2 shadow-sm cursor-pointer"
             >
               Launch Change Analysis
             </button>
             <button
               type="button"
               onClick={() => navigate('/explore')}
-              className="rounded-lg border border-white/20 hover:bg-white/10 text-sm px-4 py-2"
+              className="rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 text-sm px-4 py-2 cursor-pointer"
             >
               Draw AOI on Map
             </button>
@@ -108,9 +111,12 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {stats.map((s) => (
-          <div key={s.label} className="bg-[#0c1424] rounded-xl border border-white/10 p-4">
+          <div
+            key={s.label}
+            className="tp-card bg-[#0c1424] rounded-xl border border-white/10 hover:border-cyan-500/30 transition-colors p-4"
+          >
             <p className="text-xs text-white/50">{s.label}</p>
-            <p className="text-2xl font-bold mt-1">{s.value}</p>
+            <p className="text-2xl font-bold tabular-nums mt-1">{s.value}</p>
             <p className="text-[11px] text-white/40">{s.sub}</p>
           </div>
         ))}

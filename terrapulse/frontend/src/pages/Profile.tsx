@@ -214,8 +214,8 @@ export default function Profile() {
       </div>
 
       <section
-        style={{ backgroundImage: 'linear-gradient(135deg, #0b1b33 0%, #0a1226 55%, #060b16 100%)' }}
-        className="tp-card rounded-2xl border border-white/10 bg-[#0b172c] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6"
+        style={{ backgroundImage: 'linear-gradient(135deg, #0f1d38 0%, #0c1528 55%, #080d1a 100%)' }}
+        className="tp-card rounded-2xl border border-white/15 bg-[#0c1424] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6"
       >
         <div className="flex items-start sm:items-center gap-4">
           <div className="relative shrink-0">
@@ -304,36 +304,36 @@ export default function Profile() {
       </section>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-[#0c1424] rounded-xl border border-white/10 p-4">
+        <div className="tp-card bg-[#0c1424] rounded-xl border border-white/10 hover:border-cyan-500/30 transition-colors p-4">
           <div className="flex items-center justify-between text-xs text-white/55">
             <span>Analyses Run</span>
             <Activity size={14} className="text-cyan-400" />
           </div>
-          <div className="text-2xl font-bold mt-1">{jobs.length}</div>
+          <div className="text-2xl font-bold tabular-nums mt-1">{jobs.length}</div>
           <div className="text-[11px] text-white/50">{completedJobs.length} completed</div>
         </div>
-        <div className="bg-[#0c1424] rounded-xl border border-white/10 p-4">
+        <div className="tp-card bg-[#0c1424] rounded-xl border border-white/10 hover:border-cyan-500/30 transition-colors p-4">
           <div className="flex items-center justify-between text-xs text-white/55">
             <span>Saved AOIs</span>
             <MapPin size={14} className="text-emerald-400" />
           </div>
-          <div className="text-2xl font-bold mt-1">{aois.length}</div>
+          <div className="text-2xl font-bold tabular-nums mt-1">{aois.length}</div>
           <div className="text-[11px] text-white/50">polygons in SQLite</div>
         </div>
-        <div className="bg-[#0c1424] rounded-xl border border-white/10 p-4">
+        <div className="tp-card bg-[#0c1424] rounded-xl border border-white/10 hover:border-cyan-500/30 transition-colors p-4">
           <div className="flex items-center justify-between text-xs text-white/55">
             <span>Watchlist Sites</span>
             <ShieldCheck size={14} className="text-blue-400" />
           </div>
-          <div className="text-2xl font-bold mt-1">{watchlist.length}</div>
+          <div className="text-2xl font-bold tabular-nums mt-1">{watchlist.length}</div>
           <div className="text-[11px] text-white/50">monitored coordinates</div>
         </div>
-        <div className="bg-[#0c1424] rounded-xl border border-white/10 p-4">
+        <div className="tp-card bg-[#0c1424] rounded-xl border border-white/10 hover:border-cyan-500/30 transition-colors p-4">
           <div className="flex items-center justify-between text-xs text-white/55">
             <span>Unread Alerts</span>
             <Bell size={14} className="text-amber-400" />
           </div>
-          <div className="text-2xl font-bold mt-1">{unreadAlerts.length}</div>
+          <div className="text-2xl font-bold tabular-nums mt-1">{unreadAlerts.length}</div>
           <div className="text-[11px] text-white/50">{alerts.length} total logged</div>
         </div>
       </div>
@@ -383,8 +383,8 @@ export default function Profile() {
                       onClick={() => setProfile({ avatarKind: 'preset', avatarPreset: preset.id })}
                       className={`relative rounded-xl border p-3 text-left transition-all cursor-pointer ${
                         selected
-                          ? 'border-cyan-400 bg-cyan-500/10 ring-1 ring-cyan-400/50'
-                          : 'border-white/10 bg-white/5 hover:border-white/25'
+                          ? 'border-cyan-400 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(34,211,238,0.4)]'
+                          : 'border-white/10 bg-white/5 hover:border-white/25 hover:bg-white/10'
                       }`}
                     >
                       {selected && (
@@ -392,7 +392,7 @@ export default function Profile() {
                           <Check size={10} />
                         </span>
                       )}
-                      <span className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center mb-2 text-cyan-300">
+                      <span className="w-9 h-9 rounded-full bg-[#080f1d] border border-white/15 flex items-center justify-center mb-2 text-cyan-300">
                         <Icon size={18} />
                       </span>
                       <div className="text-xs font-semibold text-white">{preset.label}</div>

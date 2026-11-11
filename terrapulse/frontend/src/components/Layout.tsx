@@ -82,9 +82,14 @@ export function Layout({ children }: { children: ReactNode }) {
           } tp-sidebar w-60 shrink-0 border-r border-white/10 bg-[#0a1120] p-4 flex-col gap-1`}
         >
           <div className="flex items-center justify-between gap-2 px-2 pb-4">
-            <div className="flex items-center gap-2">
-              <Satellite size={20} className="text-cyan-400" />
-              <span className="font-bold tracking-wide">TerraPulse</span>
+            <div className="flex items-center gap-2.5">
+              <span className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center shrink-0">
+                <Satellite size={17} className="text-cyan-400" />
+              </span>
+              <div className="leading-tight">
+                <span className="font-bold tracking-wide block text-sm">TerraPulse</span>
+                <span className="text-[10px] text-white/45 tracking-wider uppercase block">NISAR EO</span>
+              </div>
             </div>
             <button
               type="button"
@@ -101,8 +106,10 @@ export function Layout({ children }: { children: ReactNode }) {
               to={l.path}
               onClick={() => setMenuOpen(false)}
               className={({ isActive }) =>
-                `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-cyan-400 ${
-                  isActive ? 'bg-blue-600 text-white' : 'text-white/60 hover:text-white hover:bg-white/5'
+                `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-all focus-visible:outline-2 focus-visible:outline-cyan-400 ${
+                  isActive
+                    ? 'bg-blue-600 text-white tp-keep-white font-medium shadow-sm'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
                 }`
               }
             >
@@ -113,7 +120,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <p className="mt-auto text-[11px] text-white/35 px-3 pt-3">Live NISAR data · no mock data</p>
         </aside>
         <div className="flex-1 min-w-0 flex flex-col">
-          <header className="relative z-[1100] flex items-center gap-3 px-4 md:px-6 py-3 border-b border-white/10">
+          <header className="tp-header relative z-[1100] flex items-center gap-3 px-4 md:px-6 py-3 border-b border-white/10">
             <button
               type="button"
               onClick={() => setMenuOpen(true)}
@@ -124,7 +131,7 @@ export function Layout({ children }: { children: ReactNode }) {
             </button>
             <form
               onSubmit={searchAll}
-              className="flex items-center gap-2 bg-[#0c1424] border border-white/10 rounded-lg px-3 py-1.5 w-60 sm:w-80"
+              className="flex items-center gap-2 bg-[#080f1d] border border-white/15 focus-within:border-cyan-400 rounded-lg px-3 py-1.5 w-60 sm:w-80 transition-colors"
             >
               <Search size={14} className="text-white/40" />
               <input
@@ -132,7 +139,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search location, region…"
                 aria-label="Search location or region"
-                className="bg-transparent outline-none text-sm w-full"
+                className="bg-transparent outline-none text-sm w-full text-white"
               />
             </form>
             <div className="ml-auto flex items-center gap-3">
