@@ -14,8 +14,9 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app import db
-from app.api.v1 import router as v1_router
 from app.main import app
+from app.routers import observations as observations_router
+from app.services import cache as cache_svc
 from app.services.flood_analysis import export_geojson
 from app.services.nisar_provider import MAX_WINDOW_PIXELS, NISARDataProvider
 
@@ -139,7 +140,7 @@ def test_observations_route_order(monkeypatch):
     fake_provider = MagicMock()
     fake_provider.is_authenticated.return_value = True
     fake_provider.check_availability.return_value = {"available": False, "datasets": []}
-    monkeypatch.setattr(v1_router, "get_provider", lambda: fake_provider)
+    monkeypatch.setattr(cache_svc, "get_provider", lambda: fake_provider)
 
     client = TestClient(app)
     avail = client.get(
@@ -175,10 +176,10 @@ def test_sqlite_job_persistence_and_ttl_caches(tmp_path):
     assert any(j["job_id"] == "abc123" for j in db.list_jobs(limit=10))
 
     # Bounded TTL caches
-    assert hasattr(v1_router._search_cache, "maxsize")
-    assert hasattr(v1_router._window_cache, "maxsize")
-    assert v1_router._search_cache.maxsize > 0
-    assert v1_router._window_cache.maxsize > 0
+    assert hasattr(cache_svc.search_cache, "maxsize")
+    assert hasattr(cache_svc.window_cache, "maxsize")
+    assert cache_svc.search_cache.maxsize > 0
+    assert cache_svc.window_cache.maxsize > 0
 
 
 def test_window_validation_health_cors_and_geocode(tmp_path, monkeypatch):
@@ -189,6 +190,11 @@ def test_window_validation_health_cors_and_geocode(tmp_path, monkeypatch):
     assert health.status_code == 200
     assert health.json()["status"] == "healthy"
     assert health.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+    # OpenAPI schema exposes concrete Pydantic models
+    schema = app.openapi()
+    assert "JobSummaryOut" in schema.get("components", {}).get("schemas", {})
+    assert "PointInsightsResponse" in schema.get("components", {}).get("schemas", {})
 
     # Window exceeding hard max should fail validation cleanly
     bad_win = client.post(
@@ -221,8 +227,8 @@ def test_window_validation_health_cors_and_geocode(tmp_path, monkeypatch):
             calls.append((url, params, self.headers))
             return _FakeResp()
 
-    v1_router._geocode_cache.clear()
-    monkeypatch.setattr(v1_router.httpx, "AsyncClient", _FakeAsyncClient)
+    cache_svc.geocode_cache.clear()
+    monkeypatch.setattr(observations_router.httpx, "AsyncClient", _FakeAsyncClient)
 
     r1 = client.get("/api/v1/geocode", params={"q": "Assam", "limit": 1})
     assert r1.status_code == 200

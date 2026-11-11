@@ -13,8 +13,9 @@ try:
 except ImportError:
     pass
 
-from app.api.v1.router import router
 from app.db import init_db
+from app.routers import api_router
+from app.schemas import RootResponse
 
 
 @asynccontextmanager
@@ -40,10 +41,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API router (router already carries the /api/v1 prefix)
-app.include_router(router)
+app.include_router(api_router)
 
 
-@app.get("/")
+@app.get("/", response_model=RootResponse)
 async def root():
-    return {"message": "TerraPulse API is running", "version": "0.2.0"}
+    return RootResponse(message="TerraPulse API is running", version="0.2.0")
